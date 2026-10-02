@@ -2,9 +2,12 @@
 
 This task-owned scaffold has passed static verification, sixteen host tests,
 both image builds and independent checks of all 37 plugin hashes. On 2026-10-02
-the approved controller started at localhost:8080 with named storage and the
-standard unlock wizard. Administrator setup, final access-policy activation,
-agent enrollment and Jenkins pipeline qualification remain pending. No
+the approved controller started at localhost:8080 with named storage. The user
+completed administrator setup; the final local-admin matrix policy is active.
+The exclusive one-executor Linux demo agent ran build #2 successfully, including
+user review and identical-byte local promotion. See evidence/live-demo.json.
+JuliaFlow native Windows/WSL integration and wider operational qualification
+remain pending. No
 administrator, enrollment secret, API token, service account, OAuth grant,
 hosted CI or GitHub synchronization was provisioned by the assistant. Jenkins
 created its own first-run unlock secret; the assistant did not access it. The

@@ -1,0 +1,70 @@
+{
+  "buildNumber": 2,
+  "jenkinsResult": "SUCCESS",
+  "sourceSnapshot": "demo-v1",
+  "sourceCommit": "ce9553fe26cb2612ec218c4d222eb9a7be869a64",
+  "sourceTree": "c3e6389c52a5d2443f7e5d7081f5ebaf566396d9",
+  "metadataSha256": "9e77a2208e7bc6d73a4bd6bac21401bceab1f30906323af4d8c71e6f8191fc98",
+  "bundleSha256": "f0f1515da05ad2c185b2816c5e7ec87385ced607ce85a57b40a67acbd13a0ec6",
+  "resultSha256": "8a91ae3ac1cb56f79ef99a9495abd00f8aba6d34451676f07813b7c5d83a99ba",
+  "artifactSha256": "5338739e09b1ecc66795117843a4df5f9c48fc3f5a53e3b4c37d5368272b02d5",
+  "artifactName": "demo-artifact.json",
+  "version": "1.0.0",
+  "promotionDestination": "demo-1-0-0-ce9553fe26cb",
+  "promotionReviewer": "local-admin",
+  "testedAndPromotedBytesIdentical": true,
+  "archivedEvidenceMatchesWorkspace": true,
+  "promotionLockRemoved": true,
+  "promotionStagingRemoved": true,
+  "retainedRunEvidence": true,
+  "localOnly": true,
+  "certifiesRelease": false,
+  "verifiedAtUtc": "2026-10-02T09:59:48.221353+00:00",
+  "qualificationLimits": [
+    "tiny Linux demo only; not JuliaFlow native Windows/WSL/GPU certification",
+    "repaired existing volume roots verified; updated Dockerfile not rebuilt",
+    "57 user-installed additional plugins retained outside original 37-plugin image lock",
+    "queue abort/restart, full retention and backup/restore not runtime-qualified"
+  ],
+  "controllerPolicy": {
+    "authorizationStrategyClass": "hudson.security.GlobalMatrixAuthorizationStrategy",
+    "permissions": [
+      "USER:hudson.model.Hudson.Administer:local-admin"
+    ],
+    "numExecutors": "0",
+    "agentTcpPort": "-1",
+    "csrfIssuerClass": "hudson.security.csrf.DefaultCrumbIssuer",
+    "disableSignup": "true"
+  },
+  "anonymousManagementApiStatus": {
+    "/manage": 403,
+    "/api/json": 403
+  },
+  "agent": {
+    "runtimeUser": "jenkins",
+    "limits": {
+      "Memory": 2147483648,
+      "NanoCpus": 2000000000,
+      "PidsLimit": 512,
+      "CapDrop": [
+        "ALL"
+      ],
+      "SecurityOpt": [
+        "no-new-privileges:true"
+      ],
+      "RestartPolicy": {
+        "Name": "no",
+        "MaximumRetryCount": 0
+      },
+      "Privileged": false
+    },
+    "publishedPorts": {},
+    "oneExecutorExclusive": "verified before startup and demo executed on demo-linux",
+    "mountedStorage": "separate named data volumes, base-image anonymous remoting volume and sole approved read-only secret-file bind; no Docker socket/broad host bind",
+    "secretContentsHashesLengthsAccessed": false,
+    "currentTransportConnections": {
+      "establishedControllerPortConnections": 1
+    }
+  },
+  "reviewedAtUtc": "2026-10-02T10:01:54.409391+00:00"
+}

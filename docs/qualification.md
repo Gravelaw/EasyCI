@@ -1,5 +1,37 @@
 # Qualification record
 
+## Live Linux demo, 2026-10-02
+
+Demo build #2 completed SUCCESS after fixing isolated data-volume access.
+All four stages ran: reviewed snapshot preparation, build/validation, explicit
+local-admin review and promotion of the same tested artifact bytes. Read-only
+checks confirmed source commit/tree identity, metadata/bundle checksums, result
+checksum, matching built/promoted artifact checksums and reviewer receipt. The
+Jenkins archive matches retained owner/result/promotion workspace evidence;
+the promotion lock and staging directory were removed. See evidence/live-demo.json.
+Demo uses a promotion.json destination record and release receipt; it has no
+global current-release pointer. No additional build was triggered by verification.
+
+Controller HTTP is healthy and anonymous management/API requests are denied.
+Persisted Matrix Authorization grants only USER local-admin administration;
+executors are zero, CSRF remains configured, signup is disabled and agent TCP is
+disabled. The user configured the exclusive one-executor demo node and secret
+privately. The agent runs as jenkins with all capabilities dropped, no privilege,
+no published port, no socket or broad host mount, 2 GiB/2 CPUs/512 PID limits.
+Only the approved read-only secret file is bound; data uses separate Docker
+volumes. The official agent base also declares an anonymous remoting volume at
+/home/jenkins/.jenkins. Its named-volume/retention refinement is still pending.
+Secret contents, hashes and length were not accessed by the assistant.
+
+The user-installed 57 extra plugins remain alongside the 37 locked baseline
+plugins. Their full compatibility/security review and a newly locked image are
+pending. The data-directory Dockerfile fix has not been rebuilt; the existing
+runtime volumes were repaired and verified separately. Queue abort/restart,
+backup/restore and full retention are not qualified by this successful demo.
+JuliaFlow native Windows/WSL/GPU enrollment and its real 20-phase run remain
+separate approvals and qualification work. Historical records below retain
+their original observation scope and are superseded where this record applies.
+
 ## Approved activation, 2026-10-02
 
 Both images built successfully. The first controller build exposed root ownership
