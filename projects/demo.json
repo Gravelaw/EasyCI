@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "demo",
+  "adapter": "demo",
+  "platform": "linux-container",
+  "agentLabel": "demo-linux",
+  "heavyLock": "local-heavy",
+  "profile": "demo",
+  "cache": "cold",
+  "timeoutMinutes": 10,
+  "reviewer": "local-admin",
+  "qualification": "host-adapter-tested; Jenkins integration pending"
+}

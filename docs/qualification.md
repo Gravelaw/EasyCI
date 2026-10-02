@@ -1,0 +1,72 @@
+# Qualification record
+
+Status: **reviewable scaffold with bounded host checks and actual Compose rendering;
+live Jenkins integration not qualified**. The 2026-10-02 follow-up supersedes the
+initial PATH-only Docker diagnosis and authorization configuration below. Work is a delegated local infrastructure prototype, not a new
+tracked product-completion claim. No remote tracker, repository, review or
+publication state has been changed.
+
+Passed in this task-owned Windows workspace:
+
+- PyYAML parses Compose/JCasC; checks enforce loopback-only ports, zero controller
+  executors, explicit local-admin-only matrix permissions, manual security realm, named volumes,
+  resource declarations, no privilege/socket/host mount default, and restart=no.
+- Draft 2020-12 schema and both project contracts validate. Generated pipelines
+  match contracts. Plugin/version/download-checksum manifests and image digests
+  match Dockerfiles; shell inputs explicitly retain LF on Windows.
+- Sixteen Python tests cover real temporary Git repositories, commit-pinned
+  bundles and rejection of unauthorized group/user administrator grants. The original twelve adapter tests use
+  bundles. The demo builds, tests and promotes identical serialized artifact
+  bytes while preserving dirty source. Tampered bundle, metadata, result,
+  artifact, source and evidence paths/hashes are rejected. Reviewer and busy
+  promotion locks, overwrite rejection, and Windows-only platform checks pass.
+- JuliaFlow's fixed Node runner invocation is checked. A clearly marked stub
+  exercises evidence checking, original CD command delegation and durable copy.
+  This does **not** execute WSL, the 20-phase suite or the real product package.
+- Bash syntax and Git whitespace checks run with the existing Git tools.
+
+Skipped / pending:
+
+- Controller/agent image builds, plugin download/load compatibility, actual JCasC
+  schema/wizard handoff and Jenkins pipeline parsing/execution. Both final and
+  bootstrap `docker compose config --quiet` commands passed with installed Compose 5.5.1.
+- Agent enrollment, file-secret consumption, auth/CSRF runtime checks, queue
+  serialization, limits inspection, abort/restart/retention and backup/restore.
+- Full JuliaFlow adapter run and promotion through Jenkins; Windows-native,
+  Docker product and GPU certification. Existing candidate 099bb56 results from
+  the delegation are prior-run evidence and are not attributed to this adapter.
+
+Observed environment: Windows; Python 3.14.6, Node v26.3.0, Git available. Docker,
+Podman and Java are absent from PATH. Extended read-only inspection discovered
+Docker Desktop 4.92.0 in its per-user installation directory, with valid signatures,
+CLI 29.8.0 and Compose 5.5.1. The Linux engine pipe is absent, no Desktop/backend
+process runs, and ubn, juliaflow-ci-ubuntu24 and docker-desktop are all stopped.
+WSL 2.7.14.0 is installed. No distro was started/stopped, and no software installation
+or persistent service startup has occurred. See the dated follow-up evidence.
+
+The signed Julia engineering runtime passed exact catalog integrity verification
+against the external trust store. The router selected project-workflow guidance
+under the task's already-authorized isolated mutation scope. Catalog and compact
+route binding are retained in evidence/verification.json; no raw routing query,
+trust key material or personal machine path is stored there.
+
+Dependencies were resolved from official Jenkins metadata and Docker registry
+manifests using approved read-only metadata requests. Anonymous registry pull
+authorization was short-lived and never persisted. The downloaded metadata
+identified 37 required plugin dependencies (including Matrix Authorization)
+with core baselines <= 2.580.1.
+This is a metadata compatibility check, not plugin execution. The demo image's
+added apt tools are a remaining reproducibility gap until its inventory and
+derived image digest have been reviewed and pinned.
+
+Smallest first approval: launch already installed Docker Desktop 4.92.0 and inspect
+engine health; user handles any terms/authentication prompts. No new installer,
+WSL interruption or reset is indicated. Later approvals: build/download images/plugins;
+start loopback controller (including Jenkins' initial unlock credential); manually
+create approved admin; enroll each agent with its own private secret; explicitly
+approve and coordinate use of the hardcoded JuliaFlow WSL distro/root runner.
+The narrow Desktop launch is now approved but waits for the release-gate owner's
+safe-window confirmation. Repository placement/publication is independently
+approved for private Gravelaw/EasyCI on codex/jenkins-scaffold, superseding the
+earlier undecided placement. Do not merge or deploy; verify remote state after
+publication. Other activation approvals remain pending.

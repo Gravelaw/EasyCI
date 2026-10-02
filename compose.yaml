@@ -1,0 +1,84 @@
+name: jenkins-local
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    image: local/jenkins-controller:scaffold-1
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - controller_home:/var/jenkins_home
+    environment:
+      JAVA_OPTS: "-Xms256m -Xmx1024m"
+    restart: "no"
+    init: true
+    cpus: 1.5
+    mem_limit: 2g
+    pids_limit: 512
+    stop_grace_period: 90s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [control]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  demo-agent:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    image: local/jenkins-demo-agent:scaffold-1
+    depends_on: [controller]
+    environment:
+      JAVA_OPTS: "-Xms64m -Xmx256m"
+    volumes:
+      - demo_workspace:/home/jenkins/agent
+      - demo_cache:/home/jenkins/cache
+      - demo_releases:/home/jenkins/releases
+      - demo_snapshots:/snapshots:ro
+    secrets: [demo_agent_secret]
+    restart: "no"
+    init: true
+    cpus: 2.0
+    mem_limit: 2g
+    pids_limit: 512
+    stop_grace_period: 90s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [control]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  snapshot-loader:
+    profiles: [tools]
+    image: local/jenkins-demo-agent:scaffold-1
+    entrypoint: ["python3", "-c", "import time; time.sleep(300)"]
+    network_mode: none
+    volumes:
+      - demo_snapshots:/snapshots
+    restart: "no"
+    cpus: 0.25
+    mem_limit: 128m
+    pids_limit: 32
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+secrets:
+  demo_agent_secret:
+    # Compose can render/start the controller without provisioning an agent secret.
+    # The optional demo profile fails until this file exists and enrollment is approved.
+    file: ${DEMO_AGENT_SECRET_FILE:-./secrets/demo-agent-secret}
+networks:
+  control:
+    driver: bridge
+volumes:
+  controller_home:
+    name: jenkins-local-controller-home
+  demo_workspace:
+    name: jenkins-local-demo-workspace
+  demo_cache:
+    name: jenkins-local-demo-cache
+  demo_releases:
+    name: jenkins-local-demo-releases
+  demo_snapshots:
+    name: jenkins-local-demo-snapshots

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "juliaflow",
+  "adapter": "juliaflow-wsl",
+  "platform": "windows-wsl",
+  "agentLabel": "juliaflow-windows-wsl",
+  "heavyLock": "local-heavy",
+  "profile": "release-candidate",
+  "cache": "cold",
+  "timeoutMinutes": 120,
+  "reviewer": "local-admin",
+  "qualification": "runner command contract inspected; adapter runtime pending"
+}

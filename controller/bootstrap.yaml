@@ -1,0 +1,8 @@
+# First-run wizard only. No job/agent enrollment before switching to jenkins.yaml.
+# Preserve Jenkins' standard first-run unlock and user-created administrator.
+jenkins:
+  systemMessage: "SETUP ONLY: operator must finish wizard and switch to final JCasC before enrolling agents/jobs."
+  numExecutors: 0
+  mode: EXCLUSIVE
+  slaveAgentPort: -1
+  disableRememberMe: true

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "reviewedAtUtc": "2026-10-02T05:42:07.753874+00:00",
+  "authorizedDestination": "Gravelaw/EasyCI",
+  "visibility": "private",
+  "developmentBranch": "codex/jenkins-scaffold",
+  "sourceIdentity": "isolated scaffold only; no product checkout or generated source bundle included",
+  "review": [
+    "static configuration check passed with 37 plugin pins",
+    "latest 16 host tests passed; runtime code unchanged since those tests",
+    "both actual Compose configuration renders passed with Compose 5.5.1",
+    "staged Git whitespace check passed",
+    "only allowlisted source/docs/tests and dated evidence are included; caches, secrets, bundles and product artifacts excluded"
+  ],
+  "activationApproval": "existing Docker Desktop launch and engine inspection only, waiting for release-gate owner safe-window confirmation",
+  "pendingSeparateApprovals": [
+    "image/plugin downloads/builds",
+    "Jenkins controller startup",
+    "user-operated administrator wizard",
+    "demo enrollment",
+    "native Windows/WSL enrollment"
+  ],
+  "credentials": "user handles all credential entry/submission; no new authentication material provisioned",
+  "readiness": "scaffold/static/host checks only; live Jenkins integration pending",
+  "historicalEvidence": "verification.json and followup-2026-10-02.json retain their original observation scope; this record supersedes the repository proposal"
+}

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-01T18:19:56.918790+00:00",
+  "readiness": "scaffold-and-host-tests; live-Jenkins-integration-pending",
+  "commands": [
+    {
+      "command": "python scripts/check-static.py",
+      "exitCode": 0,
+      "observed": "Compose/JCasC policy, project schema, generated pipelines, 36 plugin pins, two official image digest pins, LF consistency"
+    },
+    {
+      "command": "python -m unittest discover -s tests -v",
+      "exitCode": 0,
+      "testsPassed": 12,
+      "elapsedSeconds": 17.07,
+      "evidenceSource": "completed tool transcript",
+      "limit": "demo real Git/host execution; JuliaFlow subprocess stub explicitly not runtime qualification"
+    },
+    {
+      "command": "Git Bash bash.exe -n agent/start.sh and controller/install-plugins.sh",
+      "exitCode": 0
+    },
+    {
+      "command": "git -c core.autocrlf=false diff --no-index --check -- NUL <each-deliverable>",
+      "filesChecked": 29,
+      "observed": "no whitespace errors; no-index difference exit 1 is expected"
+    }
+  ],
+  "environment": {
+    "platform": "Windows",
+    "python": "3.14.6",
+    "node": "v26.3.0",
+    "git": "available",
+    "wslExecutable": "available, no distro invoked",
+    "docker": "not on PATH or common binary path",
+    "podman": "not on PATH or common binary path",
+    "java": "not on PATH"
+  },
+  "sourcePreservation": {
+    "candidate": "099bb56f6da8865796f1ab0b2ba8fe5e73d08afa",
+    "candidateCheckout": "clean before and after; read only",
+    "profilingCheckout": "same 11 tracked modifications and three untracked files before and after; read only"
+  },
+  "juliaRouter": {
+    "catalogVersion": "2.1.0",
+    "catalogDigest": "996753585e98ac66877932c1569ee2301c9a19cd3e763a3a34860498c837fc6e",
+    "releaseDigest": "97d0e341d80e952cd0eed6aa2b731545d1ebc96c226ff3c637f2621860cf496b",
+    "routeId": "cf2cae19-5b81-4083-8724-fb846fd47a3a",
+    "status": "ok",
+    "selected": [
+      "julia-manage-project-workflow"
+    ]
+  },
+  "notPerformed": [
+    "software installation",
+    "image/plugin installation",
+    "persistent service start",
+    "credential/admin/agent-secret provisioning",
+    "firewall change",
+    "workflow change",
+    "GitHub synchronization",
+    "external repository writes",
+    "merge",
+    "deployment",
+    "force push"
+  ],
+  "pending": [
+    "engine restoration/selection and exact Compose validation",
+    "approved image builds and derived digest/OS lock",
+    "controller startup/auth/JCasC/plugin compatibility",
+    "approved admin and separate agent enrollments",
+    "Windows Java and WSL distro/root execution approval/coordination",
+    "real Jenkins demo and JuliaFlow jobs",
+    "abort/restart/limits/retention/backup-restore checks",
+    "shared infrastructure repository destination"
+  ]
+}

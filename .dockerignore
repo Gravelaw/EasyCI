@@ -1,0 +1,10 @@
+.git
+state
+backups
+secrets
+.env
+**/__pycache__
+evidence
+tests
+examples
+docs

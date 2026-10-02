@@ -1,0 +1,24 @@
+jenkins:
+  systemMessage: "Local CI scaffold. Trusted reviewed jobs only; no release certification implied."
+  numExecutors: 0
+  mode: EXCLUSIVE
+  slaveAgentPort: -1
+  disableRememberMe: true
+  authorizationStrategy:
+    globalMatrix:
+      entries:
+        - user:
+            name: "local-admin"
+            permissions:
+              - "Overall/Administer"
+unclassified:
+  location:
+    url: "http://127.0.0.1:8080/"
+  lockableResourcesManager:
+    declaredResources:
+      - name: "local-heavy"
+        description: "One heavy job across all enrolled projects"
+# securityRealm intentionally remains owned by the manual setup wizard.
+# Only this explicit user receives permissions; other authenticated users receive none.
+# Use compose.bootstrap.yaml only for the user-operated first-run wizard, then
+# restart with compose.yaml alone to apply this final authorization configuration.

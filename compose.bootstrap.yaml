@@ -1,0 +1,6 @@
+# Temporary first-run override. Only the user completes/submits credential fields.
+# Stop using this override after the administrator wizard; base configuration is final.
+services:
+  controller:
+    environment:
+      CASC_JENKINS_CONFIG: /usr/share/jenkins/ref/bootstrap.yaml

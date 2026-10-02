@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reviewed local Jenkins project adapter",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "adapter", "platform", "agentLabel", "heavyLock", "profile", "cache", "timeoutMinutes", "reviewer", "qualification"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}$"},
+    "adapter": {"enum": ["demo", "juliaflow-wsl"]},
+    "platform": {"enum": ["linux-container", "windows-wsl"]},
+    "agentLabel": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}$"},
+    "heavyLock": {"const": "local-heavy"},
+    "profile": {"enum": ["demo", "pr", "push", "release-candidate"]},
+    "cache": {"enum": ["cold", "warm"]},
+    "timeoutMinutes": {"type": "integer", "minimum": 1, "maximum": 800},
+    "reviewer": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}$"},
+    "qualification": {"type": "string", "maxLength": 160}
+  },
+  "allOf": [
+    {"if": {"properties": {"adapter": {"const": "demo"}}}, "then": {"properties": {"platform": {"const": "linux-container"}, "profile": {"const": "demo"}}}},
+    {"if": {"properties": {"adapter": {"const": "juliaflow-wsl"}}}, "then": {"properties": {"platform": {"const": "windows-wsl"}, "cache": {"const": "cold"}, "profile": {"enum": ["pr", "push", "release-candidate"]}}}}
+  ]
+}

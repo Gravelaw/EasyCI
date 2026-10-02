@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "asOfDate": "2026-10-02",
+  "readiness": "reviewable scaffold; actual Compose rendering and host tests passed; live Jenkins integration pending",
+  "commands": [
+    {
+      "command": "python scripts/check-static.py",
+      "exitCode": 0,
+      "observed": "final local-admin-only matrix, executorless standard-wizard bootstrap, schema/pipeline consistency, 37 plugin pins and two official image digests"
+    },
+    {
+      "command": "python -m unittest discover -s tests -v",
+      "exitCode": 0,
+      "testsPassed": 16,
+      "elapsedSeconds": 15.431,
+      "evidenceSource": "completed tool transcript; includes four new authorization regression tests",
+      "limit": "host tests; JuliaFlow subprocess stub is not runtime qualification"
+    },
+    {
+      "command": "installed Docker CLI compose -f compose.yaml config --quiet",
+      "exitCode": 0,
+      "composeVersion": "5.5.1"
+    },
+    {
+      "command": "installed Docker CLI compose -f compose.yaml -f compose.bootstrap.yaml config --quiet",
+      "exitCode": 0,
+      "composeVersion": "5.5.1"
+    },
+    {
+      "command": "Git Bash bash.exe -n agent/start.sh and controller/install-plugins.sh",
+      "exitCode": 0
+    },
+    {
+      "command": "git -c core.autocrlf=false diff --no-index --check -- NUL <each-deliverable>",
+      "filesChecked": 35,
+      "observed": "no whitespace errors; no-index difference exit 1 expected"
+    }
+  ],
+  "hostDiagnosis": {
+    "scope": "read-only installed-app registration, executable signature/version, selected install-log completion/error lines, service/process state, CLI versions, named-pipe engine query and WSL list/version",
+    "dockerDesktop": {
+      "installedVersion": "4.92.0.240144",
+      "installation": "per-user LOCALAPPDATA/Programs/DockerDesktop; outside PATH",
+      "signature": "Valid, Docker Inc.",
+      "installLogResult": "Installation succeeded on 2026-09-25",
+      "processes": "no Desktop/backend process at inspection",
+      "autoStart": false
+    },
+    "dockerCLI": {
+      "version": "29.8.0",
+      "signature": "Valid, Docker Inc."
+    },
+    "compose": {
+      "version": "5.5.1",
+      "signature": "Valid, Docker Inc."
+    },
+    "engineProbe": "dockerDesktopLinuxEngine named pipe absent; query cannot connect; Desktop not launched",
+    "wsl": {
+      "version": "2.7.14.0",
+      "distrosAtInspection": {
+        "ubn": "Stopped",
+        "juliaflow-ci-ubuntu24": "Stopped",
+        "docker-desktop": "Stopped"
+      },
+      "WSLService": "Running",
+      "vmcompute": "Stopped",
+      "caveat": "read-only snapshot; resource state may change as CI owner prepares its release gate"
+    },
+    "podman": "no matching app registration/common binary/PATH command found",
+    "java": "not found on PATH; native enrollment deferred",
+    "notInspected": [
+      "login/token files",
+      "credential stores",
+      "full Docker settings dump"
+    ]
+  },
+  "smallestFirstApproval": {
+    "action": "launch existing signed Docker Desktop 4.92.0 and inspect engine health only",
+    "coordination": "wait until active full JuliaFlow release gate owner confirms safe window; no engine restoration/restart during that job",
+    "handoff": "user handles license agreement, sign-in, passwords and all credential submissions",
+    "stopConditions": [
+      "update/install/repair/reset request",
+      "reboot or WSL update/shutdown request",
+      "security or distro integration setting change"
+    ],
+    "notIncluded": [
+      "image builds/downloads",
+      "Jenkins controller start",
+      "admin/node creation",
+      "persistent credentials",
+      "native Windows/WSL enrollment"
+    ]
+  },
+  "scaffoldAuthorizationChange": {
+    "plugin": "matrix-auth:3.3 with published SHA-256; 37-plugin closure",
+    "default": "globalMatrix explicit user local-admin has Overall/Administer; no other user/group entry",
+    "bootstrap": "separate opt-in Compose override for standard first-run wizard; zero executors/no enrolled agents; user credential entry; switch to final policy before jobs/enrollment",
+    "activation": "not applied to any running service; actual auth/JCasC/wizard checks still pending"
+  },
+  "juliaflowIntegration": {
+    "additionalSourceChangeNeededForCurrentAdapter": false,
+    "commands": [
+      "node scripts/ci/wsl.mjs --ref <full-sha> --base <full-sha> --profile release-candidate --cache cold",
+      "node scripts/ci/delivery.mjs --run <verified-run-id>"
+    ],
+    "separateDistro": "requires separately reviewed upstream option because distro is hardcoded",
+    "productWrites": "none"
+  },
+  "repositoryProposal": {
+    "name": "local-ci-infra",
+    "visibility": "private",
+    "created": false,
+    "pushed": false
+  },
+  "officialSources": {
+    "dockerInstallation": "https://docs.docker.com/desktop/setup/install/windows-install/",
+    "dockerReleaseNotes": "https://docs.docker.com/desktop/release-notes/",
+    "dockerLicense": "https://docs.docker.com/subscription-billing/desktop-license/",
+    "matrixAuthorization": "https://plugins.jenkins.io/matrix-auth/"
+  },
+  "notPerformed": [
+    "engine/Desktop/service launch",
+    "distro start/stop/shutdown",
+    "installation/repair/reset/upgrade",
+    "credential entry/submission/creation",
+    "running security setting changes",
+    "external repository writes",
+    "workflow changes",
+    "repository creation",
+    "purchase"
+  ]
+}
