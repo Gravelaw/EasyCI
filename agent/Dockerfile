@@ -9,5 +9,8 @@ COPY scripts /opt/local-ci/scripts
 COPY projects /opt/local-ci/projects
 COPY schemas /opt/local-ci/schemas
 COPY agent/start.sh /opt/local-ci/start.sh
+RUN mkdir -p /home/jenkins/cache /home/jenkins/releases \
+    && chown jenkins:jenkins /home/jenkins/cache /home/jenkins/releases \
+    && chmod 0750 /home/jenkins/cache /home/jenkins/releases
 USER jenkins
 ENTRYPOINT ["bash", "/opt/local-ci/start.sh"]

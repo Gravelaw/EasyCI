@@ -1,0 +1,21 @@
+{
+  "verifiedAtUtc": "2026-10-02T09:50:10.770610+00:00",
+  "failedBuild": 1,
+  "firstFailingStage": "Promote same bytes",
+  "error": "Permission denied: '/home/jenkins/releases/.promotion-lock'",
+  "priorStages": "snapshot preparation, build/validation and local-admin review completed",
+  "rootCause": "fresh cache/releases volume roots root:root 0755; agent UID/GID 1000",
+  "repair": "only verified demo cache/releases volume roots changed to root:1000 0770",
+  "initializer": "network none; user 0:1000; all capabilities dropped; no host mounts or secret",
+  "runtimeValidation": "live non-root agent created/removed only its own temporary directories in both volumes",
+  "sourceChange": "prepare agent-owned data directories in Dockerfile for future builds; add reviewed existing-volume initializer",
+  "tests": [
+    "static configuration check passed",
+    "16 host tests passed"
+  ],
+  "imageRebuilt": false,
+  "controllerRestarted": false,
+  "jenkinsSecurityChanged": false,
+  "secretsAccessed": false,
+  "pending": "user starts next build and reviews newly tested result; pipeline end-to-end success remains unqualified"
+}

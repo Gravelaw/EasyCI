@@ -109,3 +109,22 @@ backup/restore. Then enroll/coordinate native Windows WSL execution, run complet
 same-candidate cold JuliaFlow validation, review its 20 phases/evidence/cleanup,
 and promote the exact staged package. GPU/native/Docker product qualifications
 remain separate. Do not call this stack production-ready before these checks.
+# Existing demo-volume initialization
+
+The first live demo passed build/validation and reviewer approval, then failed
+promotion because the fresh releases volume root belonged to root:root (0755).
+The running agent is UID/GID 1000. The task repaired only the cache/releases
+volume roots to root:1000 (0770) using a bounded no-network initializer with
+all capabilities dropped; no Jenkins permissions or secret files changed.
+Creating/removing owned temporary directories as the live agent passed.
+
+For an existing affected deployment, run `python scripts/init-demo-volumes.py`
+with `--docker` pointing to the installed Docker CLI and, on this Windows host,
+`--host npipe:////./pipe/dockerDesktopLinuxEngine`.
+
+It requires already-existing volumes labeled for this Compose project, rejects
+unexpected root ownership, and touches only those two directory roots. It does
+not recursively rewrite data or add capabilities. The Dockerfile now prepares
+agent-owned directories for future fresh volume initialization; that image change
+has not been rebuilt/deployed in this repair. Existing image identities remain
+unchanged. Keep the image-qualified state separate from source readiness.
