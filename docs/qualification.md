@@ -8,7 +8,8 @@ local-admin review and promotion of the same tested artifact bytes. Read-only
 checks confirmed source commit/tree identity, metadata/bundle checksums, result
 checksum, matching built/promoted artifact checksums and reviewer receipt. The
 Jenkins archive matches retained owner/result/promotion workspace evidence;
-the promotion lock and staging directory were removed. See evidence/live-demo.json.
+the promotion lock and staging directory were removed. See the
+[verified build #2 evidence](../evidence/live-demo.json).
 Demo uses a promotion.json destination record and release receipt; it has no
 global current-release pointer. No additional build was triggered by verification.
 
@@ -23,8 +24,8 @@ volumes. The official agent base also declares an anonymous remoting volume at
 /home/jenkins/.jenkins. Its named-volume/retention refinement is still pending.
 Secret contents, hashes and length were not accessed by the assistant.
 
-The user-installed 57 extra plugins remain alongside the 37 locked baseline
-plugins. Their full compatibility/security review and a newly locked image are
+The current controller has 94 plugins: 57 user-installed extras alongside the
+37 locked baseline plugins. The extras' full compatibility/security review and a newly locked image are
 pending. The data-directory Dockerfile fix has not been rebuilt; the existing
 runtime volumes were repaired and verified separately. Queue abort/restart,
 backup/restore and full retention are not qualified by this successful demo.
