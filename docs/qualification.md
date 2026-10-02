@@ -1,5 +1,24 @@
 # Qualification record
 
+## Approved activation, 2026-10-02
+
+Both images built successfully. The first controller build exposed root ownership
+of its temporary plugin manifest; `COPY --chown=jenkins:jenkins` fixes cleanup
+without changing the runtime user. Sixteen host tests and static checks passed
+after the fix. Bounded containers with network disabled independently verified
+all 37 plugin hashes and recorded the agent tool/package inventory and derived
+image identities in `evidence/image-build.json`.
+
+The controller started using the bootstrap override. Read-only inspection verified
+the sole port binding is 127.0.0.1:8080, named home storage, 2 GiB memory, 1.5 CPUs,
+512 PIDs, all capabilities dropped, no-new-privileges and restart=no. HTTP returned
+200, Jenkins 2.580.1 and the unlock wizard. No logs or unlock secret were read.
+The user must complete the wizard and create `local-admin` before applying the
+final matrix configuration. No agents were enrolled or jobs run. Plugin loading,
+final JCasC/authentication behavior, pipeline execution and full JuliaFlow adapter
+qualification remain pending. The records below retain the earlier state for
+provenance and are superseded where this activation supplies new evidence.
+
 Status: **reviewable scaffold with bounded host checks and actual Compose rendering;
 live Jenkins integration not qualified**. The 2026-10-02 follow-up supersedes the
 initial PATH-only Docker diagnosis and authorization configuration below. Work is a delegated local infrastructure prototype, not a new

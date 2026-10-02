@@ -1,0 +1,31 @@
+{
+  "timeUtc": "2026-10-02T06:32:00.140285+00:00",
+  "images": {
+    "local/jenkins-controller:scaffold-1": {
+      "Id": "sha256:22d9eb7caa057fb749bf873c0f24898a45e6af9635698e6be750f3531d6c8296",
+      "RepoDigests": [
+        "local/jenkins-controller@sha256:22d9eb7caa057fb749bf873c0f24898a45e6af9635698e6be750f3531d6c8296"
+      ],
+      "Os": "linux",
+      "Architecture": "amd64",
+      "user": "jenkins"
+    },
+    "local/jenkins-demo-agent:scaffold-1": {
+      "Id": "sha256:6d380581b7ca3c6f8313dbf68961e73261b548e98e4fe06a2f4f1daf91146f18",
+      "RepoDigests": [
+        "local/jenkins-demo-agent@sha256:6d380581b7ca3c6f8313dbf68961e73261b548e98e4fe06a2f4f1daf91146f18"
+      ],
+      "Os": "linux",
+      "Architecture": "amd64",
+      "user": "jenkins"
+    }
+  },
+  "verifiedPluginCount": 37,
+  "agentToolVersions": [
+    "3.13.5 (main, Aug 10 2026, 12:06:59) [GCC 14.2.0]",
+    "git version 2.47.3"
+  ],
+  "agentInventorySha256": "c48a360f79c8bb1363eb1225a4a9204fff563271d4f2c75999d1711c830baba2",
+  "checksNetwork": "none",
+  "agentsStarted": false
+}

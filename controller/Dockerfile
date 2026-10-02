@@ -3,7 +3,7 @@ FROM jenkins/jenkins:2.580.1-jdk21@sha256:a660310e39ade10631f774bacd5219de767dfd
 # No plugin resolver selects newer transitive versions during the build.
 COPY dependency-lock.json /usr/share/jenkins/ref/dependency-lock.json
 COPY controller/install-plugins.sh /tmp/install-plugins.sh
-COPY controller/plugins-download.tsv /tmp/locked-plugins.tsv
+COPY --chown=jenkins:jenkins controller/plugins-download.tsv /tmp/locked-plugins.tsv
 RUN bash /tmp/install-plugins.sh
 COPY controller/jenkins.yaml /usr/share/jenkins/ref/jenkins.yaml
 COPY controller/bootstrap.yaml /usr/share/jenkins/ref/bootstrap.yaml

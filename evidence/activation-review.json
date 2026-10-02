@@ -1,0 +1,20 @@
+{
+  "reviewedAtUtc": "2026-10-02T06:34:13.666400+00:00",
+  "scope": "approved image build and loopback controller activation",
+  "codeChange": "assign temporary plugin manifest ownership to existing jenkins build user",
+  "validation": [
+    "16 host tests passed",
+    "static checks passed",
+    "both images built",
+    "37 built plugin SHA-256 checks passed in no-network container",
+    "loopback wizard HTTP 200; state/storage/limits inspected"
+  ],
+  "pending": [
+    "user-operated admin wizard",
+    "final matrix configuration verification",
+    "separate agent enrollment",
+    "Jenkins pipeline execution"
+  ],
+  "credentialsAccessedByAssistant": false,
+  "publication": "same previously approved private development branch; no merge"
+}

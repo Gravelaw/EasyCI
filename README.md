@@ -1,9 +1,14 @@
 # EasyCI: reusable local Jenkins scaffold
 
-This task-owned scaffold is ready for review and static verification. It has **not
-been built or started as Jenkins**. No administrator, enrollment secret, API
-token, service account, OAuth grant, hosted CI, or GitHub synchronization was
-created. The source JuliaFlow CI and profiling checkouts were read only.
+This task-owned scaffold has passed static verification, sixteen host tests,
+both image builds and independent checks of all 37 plugin hashes. On 2026-10-02
+the approved controller started at localhost:8080 with named storage and the
+standard unlock wizard. Administrator setup, final access-policy activation,
+agent enrollment and Jenkins pipeline qualification remain pending. No
+administrator, enrollment secret, API token, service account, OAuth grant,
+hosted CI or GitHub synchronization was provisioned by the assistant. Jenkins
+created its own first-run unlock secret; the assistant did not access it. The
+source JuliaFlow CI and profiling checkouts were read only.
 
 The controller runs in a Linux container with durable named storage and no build
 executors. A separate Linux container agent handles the demo. JuliaFlow uses a
