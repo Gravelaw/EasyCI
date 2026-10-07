@@ -22,6 +22,8 @@ local package delivery.
 
 Files:
 
+- [Cloud development preflight](docs/cloud-preflight.md): bounded Linux checks,
+  explicit source identity and the boundary with local JuliaFlow qualification.
 - `compose.yaml`, `controller/`: localhost controller, JCasC, pinned plugins.
 - `agent/`: optional unprivileged inbound Linux agent over WebSocket.
 - `projects/`, `schemas/`, `pipelines/`: reusable contracts and generated UI pipeline scripts.
@@ -47,9 +49,9 @@ No installation has been performed. Pipeline scripts are administrator-installed
 in the Jenkins UI with Groovy sandbox enabled. There is no automatic seed job or
 SCM checkout, and no local-checkout protection override.
 
-Docker Desktop 4.92.0 is already installed outside PATH; no reinstall is currently
-indicated. Its launch is approved and remains pending the release-gate owner's
-safe-window confirmation. First-run
+The historical 2026-10-02 local Windows diagnosis found Docker Desktop 4.92.0
+outside PATH. Activation subsequently completed as recorded above; those local
+observations are not the cloud environment's setup state. First-run
 credential entry/submission belongs to the user. Use the temporary bootstrap
 override for the wizard, then switch to default final JCasC before adding jobs or
 agents; ordinary authenticated users receive no permissions in that final policy.

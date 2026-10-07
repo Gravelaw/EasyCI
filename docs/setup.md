@@ -1,5 +1,9 @@
 # Minimal setup and approvals
 
+This document describes local controller/agent operations and retains dated
+Windows observations. For cloud repository development, start with the
+[cloud preflight](cloud-preflight.md); do not replay local activation here.
+
 All commands below are an operator plan, **not actions already taken**. Separate
 approval is required for software installation, image build/download, persistent
 controller startup, administrator creation, and each agent enrollment. Review
@@ -103,12 +107,14 @@ validates the bundle. Build the demo job with `SNAPSHOT_ID=demo-v1` and the exac
 `METADATA_SHA256`. Review result/receipt hashes and approve as `local-admin`.
 This demonstrates local artifact delivery only.
 
-For JuliaFlow use project `juliaflow`, snapshot ID `juliaflow-099bb56`, commit
-`099bb56f6da8865796f1ab0b2ba8fe5e73d08afa`, baseline
-`11856e4d85f6c8ee96446687b4b21057733d9750` (verified locally present), and an
+For JuliaFlow use project `juliaflow`, a new reviewed snapshot ID, and explicit
+full candidate and baseline commit SHAs approved for that run. Verify both
+objects in the actual JuliaFlow repository before ingestion; do not substitute
+EasyCI's HEAD, a moving branch, or a candidate from historical evidence. Use an
 operator-owned snapshot root outside all product checkouts. Put the resulting
 snapshot under `C:/JenkinsLocal/snapshots/juliaflow`, preserving its metadata
-hash. Nothing here exports/promotes an existing run or recertifies candidate 0.1.0.
+hash. Nothing here exports/promotes an existing run or recertifies a prior package.
+Historical candidate observations remain in `evidence/verification.json`.
 
 ## Native Windows / WSL enrollment decision
 
