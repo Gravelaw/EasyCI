@@ -18,7 +18,7 @@ TERMINAL = ('passed', 'failed', 'unsupported', 'timed_out', 'cancelled', 'interr
 
 
 def home():
-    return pathlib.Path(os.environ.get('EASYCI_HOME') or pathlib.Path.home() / 'EasyCI')
+    return pathlib.Path(os.environ.get('EASYCI_HOME') or pathlib.Path.home() / 'EasyCI').absolute()
 
 
 def setting(name, default):

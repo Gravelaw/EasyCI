@@ -97,13 +97,14 @@ def plain(run, gh=None, behind_job=None):
                 f'Nothing was run for that job. {github_clause(run, gh)}')
     if state == 'timed_out':
         job = first('timed_out') or {}
-        return f'{job.get("name", "A job")} ran longer than {job.get("timeout_minutes")} minutes and was stopped.'
+        return (f'{job.get("name", "A job")} ran longer than {job.get("timeout_minutes")} minutes and was stopped. '
+                f'{github_clause(run, gh)}')
     if state == 'cancelled':
         return ('Stopped: the machine was busy and --no-queue was given.' if run.get('reason') == 'busy'
-                else 'Stopped because you asked.')
+                else f'Stopped because you asked. {github_clause(run, gh)}')
     if state == 'interrupted':
         return ('The run was interrupted (the computer may have restarted or the process was killed). '
-                'Start it again with `easyci run`.')
+                f'Start it again with `easyci run`. {github_clause(run, gh)}')
     return f'Unknown state {state}.'
 
 

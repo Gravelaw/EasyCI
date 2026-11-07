@@ -437,6 +437,8 @@ def predict(plan):
                                             'runner': {'os': 'Linux'}, 'env': {}})
             state, reason = ('run', None) if ok else ('skipped', 'condition_false')
         job['predicted'], job['predicted_reason'] = state, reason
+        if reason == 'condition_false' and 'needs.' in str(job['if']):
+            job['predicted_note'] = 'outputs of earlier jobs are only known at run time and read as empty here'
         job['run_steps'] = sum(1 for s in job['steps'] if s['kind'] == 'run')
         job['mapped'] = [f'{s["kind"]}:{s.get("uses")}' for s in job['steps'] if s['kind'] not in ('run', 'skipped')]
         results[job['id']] = 'success' if state == 'run' else 'skipped' if state == 'skipped' else 'failure'

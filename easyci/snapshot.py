@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 
+NO_WINDOW = 0x08000000 if os.name == 'nt' else 0  # no console window from a detached parent
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 
 
@@ -20,7 +21,7 @@ def git_env():
     env = dict(os.environ)
     env.update({'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_TERMINAL_PROMPT': '0',
                 'GIT_OPTIONAL_LOCKS': '0'})
-    for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CEILING_DIRECTORIES'):
+    for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'):
         env.pop(name, None)
     return env
 
@@ -32,7 +33,7 @@ def git_exe():
 def git(args, cwd, check=True, binary=False, timeout=300):
     cmd = [git_exe(), '-c', 'core.hooksPath=', '-c', 'credential.helper=', '-c', 'core.autocrlf=false', *args]
     result = subprocess.run(cmd, cwd=cwd, env=git_env(), capture_output=True, timeout=timeout,
-                            stdin=subprocess.DEVNULL)
+                            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
     if check and result.returncode != 0:
         raise GitError(f'git {args[0]} failed: {result.stderr.decode(errors="replace").strip()[:300]}')
     if binary:

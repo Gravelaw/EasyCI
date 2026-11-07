@@ -302,6 +302,8 @@ class Supervisor:
             store.log(f'{self.run_id}: job {jid} error {traceback.format_exc()}')
             self.marker(f'EasyCI error: {error}')
             outcome = outcome or ('failed', f'internal_error:{str(error)[:120]}')
+        finally:
+            backend.end_job()
         try:
             if job['evidence']:
                 copied = backend.collect(ws, job['evidence'], job_dir / 'artifacts' / 'evidence')
@@ -446,11 +448,16 @@ class Supervisor:
 
     def watch(self, proc, backend, job, jr, deadline, step_deadline):
         """Stream output; enforce cancel, job timeout, step timeout and stall. Return a kill reason or None."""
+        handle = self.log_handle
+
         def reader():
-            for raw in iter(proc.popen.stdout.readline, b''):
-                self.log_handle.write(self.redact(raw.rstrip(b'\r\n')) + b'\n')
-                self.log_handle.flush()
-                self.last_output = time.time()
+            try:
+                for raw in iter(proc.popen.stdout.readline, b''):
+                    handle.write(self.redact(raw.rstrip(b'\r\n')) + b'\n')
+                    handle.flush()
+                    self.last_output = time.time()
+            except (OSError, ValueError):
+                pass  # the job ended while a background child still held the pipe
         thread = threading.Thread(target=reader, daemon=True)
         thread.start()
         stall_s = float(job['stall_minutes']) * 60
@@ -487,13 +494,14 @@ class Supervisor:
                         pass
                     thread.join(timeout=10)
                     break
-            elif not thread.is_alive():
+            else:
+                thread.join(timeout=5)  # a background child may keep the pipe open; do not wait on it
                 break
             if time.time() - self.last_save > 5:
                 jr['last_output_at'] = store.iso(self.last_output)
                 self.save()
             time.sleep(poll_s())
-        thread.join(timeout=10)
+        thread.join(timeout=1)
         jr['last_output_at'] = store.iso(self.last_output)
         return 'failure' if reason == 'step_timeout' else reason
 

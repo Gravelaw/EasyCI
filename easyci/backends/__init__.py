@@ -41,6 +41,60 @@ def run_quiet(cmd, timeout=30, env=None):
     return result.returncode, text.replace('\x00', '').strip()
 
 
+def job_limit_struct():
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):
+        _fields_ = [('a', ctypes.c_int64), ('b', ctypes.c_int64), ('LimitFlags', wintypes.DWORD),
+                    ('c', ctypes.c_size_t), ('d', ctypes.c_size_t), ('e', wintypes.DWORD), ('f', ctypes.c_size_t),
+                    ('g', wintypes.DWORD), ('h', wintypes.DWORD)]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [('basic', Basic), ('io', ctypes.c_uint64 * 6), ('limits', ctypes.c_size_t * 4)]
+    return Extended()
+
+
+class WinJob:
+    """A Job object holding one step's whole process tree (MSYS re-parents children, so taskkill /T
+    misses them). KILL_ON_JOB_CLOSE also ends the tree if the supervisor itself dies."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self.k = k = ctypes.WinDLL('kernel32', use_last_error=True)
+        k.CreateJobObjectW.restype = wintypes.HANDLE
+        k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.handle = k.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise OSError(ctypes.get_last_error(), 'CreateJobObject failed')
+        info = job_limit_struct()
+        info.basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        k.SetInformationJobObject(self.handle, 9, ctypes.byref(info), ctypes.sizeof(info))
+
+    def adopt(self, popen):
+        """Assign a CREATE_SUSPENDED process, then let it run; children inherit the job."""
+        import ctypes
+        from ctypes import wintypes
+        ok = self.k.AssignProcessToJobObject(self.handle, wintypes.HANDLE(int(popen._handle)))
+        ntdll = ctypes.WinDLL('ntdll')
+        ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+        ntdll.NtResumeProcess(wintypes.HANDLE(int(popen._handle)))
+        return bool(ok)
+
+    def terminate(self):
+        if self.handle:
+            self.k.TerminateJobObject(self.handle, 1)
+
+    def close(self):
+        if self.handle:
+            self.k.CloseHandle(self.handle)
+            self.handle = None
+
+
 def kill_tree(pid):
     if not pid:
         return

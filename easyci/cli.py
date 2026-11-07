@@ -300,10 +300,10 @@ def cmd_run(args):
 
 
 def cmd_status(args):
+    if args.watch and args.json:
+        raise Fail(2, 'USAGE', '--watch prints sentences; use easyci wait --json instead.', 'Drop --json or --watch.')
     rd = get_run(args.run_id, args.repo)
     if args.watch:
-        if args.json:
-            raise Fail(2, 'USAGE', '--watch prints sentences; use easyci wait --json instead.', 'Drop --json or --watch.')
         last = None
         while True:
             data = view(rd)
@@ -343,6 +343,8 @@ def pick_job(rd, run, name):
 
 
 def cmd_logs(args):
+    if args.follow and args.json:
+        raise Fail(2, 'USAGE', '--follow streams text; it cannot be combined with --json.', 'Drop --json or --follow.')
     rd = get_run(args.run_id, args.repo)
     run = store.read_json(rd / 'run.json')
     job = pick_job(rd, run, args.job)

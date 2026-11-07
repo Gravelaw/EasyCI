@@ -88,7 +88,8 @@ def schtasks(rd, run_id):
     path = pathlib.Path(rd) / 'task.xml'
     path.write_text(xml, encoding='utf-16')
     for args_ in (['/create', '/tn', task_name(run_id), '/xml', str(path), '/f'], ['/run', '/tn', task_name(run_id)]):
-        result = subprocess.run(['schtasks', *args_], capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        result = subprocess.run(['schtasks', *args_], capture_output=True, stdin=subprocess.DEVNULL, timeout=60,
+                                creationflags=0x08000000)
         if result.returncode != 0:
             raise OSError(f'schtasks {args_[0]} failed: {result.stderr.decode(errors="replace").strip()}')
 
@@ -96,7 +97,7 @@ def schtasks(rd, run_id):
 def delete_task(run_id):
     if os.name == 'nt' and run_id:
         subprocess.run(['schtasks', '/delete', '/tn', task_name(run_id), '/f'], capture_output=True,
-                       stdin=subprocess.DEVNULL, timeout=60)
+                       stdin=subprocess.DEVNULL, timeout=60, creationflags=0x08000000)
 
 
 def start(rd, run_id):

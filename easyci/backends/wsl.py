@@ -144,6 +144,9 @@ class Wsl:
         kill_group(self.distro, proc.info.get('pgid_file'))
         kill_tree(proc.popen.pid)
 
+    def end_job(self):
+        pass
+
     def unc(self, path):
         return pathlib.Path(rf'\\wsl.localhost\{self.distro}' + path.replace('/', '\\'))
 

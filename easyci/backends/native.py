@@ -7,7 +7,7 @@ import shutil
 import subprocess
 
 from easyci import snapshot, store
-from easyci.backends import NO_WINDOW, Proc, collect, find_metrics, host_env, kill_tree, run_quiet
+from easyci.backends import NO_WINDOW, Proc, WinJob, collect, find_metrics, host_env, kill_tree, run_quiet
 
 PROBES = {'node': ['node', '--version'], 'npm': ['npm', '--version'], 'python': ['python', '--version'],
           'julia': ['julia', '--version'], 'java': ['java', '-version'], 'go': ['go', 'version'],
@@ -102,13 +102,27 @@ class Native:
         path = steps / f'{index}{EXT[shell]}'
         path.write_bytes(script_text(shell, body).encode('utf-8'))
         full_env = {**host_env(), **env}
-        kwargs = {'start_new_session': True} if os.name != 'nt' else {'creationflags': NO_WINDOW}
+        if os.name == 'nt' and getattr(self, 'winjob', None) is None:
+            self.winjob = WinJob()
+        job = getattr(self, 'winjob', None)
+        kwargs = {'start_new_session': True} if os.name != 'nt' else {'creationflags': NO_WINDOW | 0x4}  # SUSPENDED
         popen = subprocess.Popen(shell_command(shell, path), cwd=cwd, env=full_env, stdin=subprocess.DEVNULL,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True, **kwargs)
+        if job and not job.adopt(popen):
+            store.log(f'could not assign step {index} to a job object; kill falls back to taskkill /T')
         return Proc(popen, {'backend': self.id, 'pid': popen.pid})
 
     def kill(self, proc):
+        if getattr(self, 'winjob', None):
+            self.winjob.terminate()
         kill_tree(proc.popen.pid)
+
+    def end_job(self):
+        """Like GitHub, processes a job left running (e.g. `server &`) end with the job."""
+        job, self.winjob = getattr(self, 'winjob', None), None
+        if job:
+            job.terminate()
+            job.close()
 
     def collect(self, ws, patterns, dest):
         return collect(ws, patterns, dest)
