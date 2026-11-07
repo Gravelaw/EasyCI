@@ -225,8 +225,9 @@ class NativeRuns(EasyCITest):
 
     def test_stall_mark_then_kill_and_timeout(self):
         extra = '    timeout-minutes: 0.07\n'
-        repo = self.make_repo(sleeper(30, extra), {'easyci.yml': 'jobs:\n  slow:\n    stall_minutes: 0.02\n'})
-        run = self.start(repo, '--no-report')
+        repo = self.make_repo(sleeper(30, extra), {'easyci.yml': 'jobs:\n  slow:\n    stall_minutes: 0.02\n'},
+                              remote='https://github.com/owner/repo.git')
+        run = self.start(repo)
         rd = self.run_dir(run['run_id'])
         self.until(lambda: store.read_json(rd / 'run.json').get('stalled'))
         code, doc, _ = self.call('status', run['run_id'])
@@ -236,6 +237,7 @@ class NativeRuns(EasyCITest):
         self.assertEqual((code, data['state']), (6, 'timed_out'))
         self.assertEqual(data['jobs'][0]['reason'], 'timeout')
         self.assertTrue(data['plain'].startswith('slow ran longer than 0.07 minutes and was stopped.'))
+        self.assertEqual({k: v[0] for k, v in self.final_statuses().items()}, {'easyci/slow': 'error', 'easyci': 'error'})
         self.assertFalse(store.pid_alive(int((rd / 'jobs/slow/pid').read_text().strip())))
         self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
 

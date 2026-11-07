@@ -136,7 +136,8 @@ class Supervisor:
             time.sleep(0.1)
         self.save()
         self.write_beat()
-        threading.Thread(target=self.heartbeat_loop, daemon=True).start()
+        self.hb_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
+        self.hb_thread.start()
         if not self.wait_queue():
             return self.finalize()
         self.set_state('preparing')
@@ -540,6 +541,8 @@ class Supervisor:
         store.remove_ticket(self.run_id)
         keep_awake(False)
         self.stop.set()
+        if getattr(self, 'hb_thread', None):
+            self.hb_thread.join(timeout=10)  # no heartbeat write may land after the seal
         self.write_beat()
         if self.run.get('launch') == 'schtasks':
             launch.delete_task(self.run_id)

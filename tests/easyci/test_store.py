@@ -168,6 +168,13 @@ class GitHubStatuses(EasyCITest):
         self.assertEqual([s for _, s, _ in out], ['success', 'failure', 'failure'])
         self.assertTrue(out[0][2].startswith('passed in 14m 02s · run 20261107-141205-7f3a'))
         self.assertTrue(all(len(d) <= 140 and (run['run_id'] in d or d.endswith('...')) for _, _, d in out))
+        for state in ('cancelled', 'unsupported', 'timed_out', 'interrupted'):
+            run.update(state=state)
+            run['jobs'][1]['state'] = state
+            self.assertEqual([s for _, s, _ in github.desired(run)], ['success', 'error', 'error'], state)
+        run.update(state='running')
+        run['jobs'][1]['state'] = 'running'
+        self.assertEqual([s for _, s, _ in github.desired(run)], ['success', 'pending', 'pending'])
 
 
 class Redaction(EasyCITest):
