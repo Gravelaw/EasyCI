@@ -65,6 +65,10 @@ class RealWsl(EasyCITest):
         run_id = self.start_wsl(self.make_repo(stub('sleep 20; echo done')))
         code, data = self.wait(run_id, timeout=180)
         self.assertEqual(code, 0, data)
+        # Guard against a launcher that returns before the step runs (bare `setsid` forks).
+        self.assertGreaterEqual(data['jobs'][0]['elapsed_s'], 20, data)
+        log = (store.find_run(run_id) / 'jobs/stub/log.txt').read_text(encoding='utf-8')
+        self.assertIn('done', log)
 
     def test_timeout_kills_the_process_group(self):  # criterion 9
         repo = self.make_repo(stub('echo hi; sleep 600', '    timeout-minutes: 1\n'))

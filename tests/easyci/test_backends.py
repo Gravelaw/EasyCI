@@ -20,7 +20,7 @@ class FakeWsl(EasyCITest):
                                         '/home/u/.easyci/work/r/j', job_dir, 3)
         args, kwargs = popen.call_args
         wrapper = job_dir / 'steps' / '3.wrap.sh'
-        self.assertEqual(args[0], [str(self.tmp / 'no-wsl.exe'), '-d', 'test-distro', '--exec', 'setsid', 'bash',
+        self.assertEqual(args[0], [str(self.tmp / 'no-wsl.exe'), '-d', 'test-distro', '--exec', 'setsid', '--wait', 'bash',
                                    wsl.to_linux(wrapper)])
         self.assertEqual(set(kwargs['env']['WSLENV'].split(':')), {'SECRET_TOKEN', 'CI'})
         text = wrapper.read_text()

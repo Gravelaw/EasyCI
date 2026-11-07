@@ -1,4 +1,7 @@
-"""`wsl:<distro>`: steps run with `wsl -d <distro> --exec setsid bash` on the distro's own ext4.
+"""`wsl:<distro>`: steps run with `wsl -d <distro> --exec setsid --wait bash` on the distro's own ext4.
+
+`--wait` matters: under `wsl --exec` the caller is a group leader, so a bare `setsid` forks and
+returns 0 immediately, which would report every step as passed before it ran.
 
 Environment crosses via WSLENV (values never touch disk); the workspace lives under
 ~/.easyci/work/<run-id>/<job> inside the distro; kill is by process group.
@@ -135,7 +138,7 @@ class Wsl:
                              f'exec {run} {q(to_linux(script))}\n').encode('utf-8'))
         names = [k for k in env if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)]
         full_env = {**os.environ, **{k: env[k] for k in names}, 'WSLENV': ':'.join(names)}
-        popen = subprocess.Popen([wsl_exe(), '-d', self.distro, '--exec', 'setsid', 'bash', to_linux(wrapper)],
+        popen = subprocess.Popen([wsl_exe(), '-d', self.distro, '--exec', 'setsid', '--wait', 'bash', to_linux(wrapper)],
                                  env=full_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, creationflags=NO_WINDOW, close_fds=True)
         return Proc(popen, {'backend': self.id, 'distro': self.distro, 'pid': popen.pid, 'pgid_file': str(pgid)})

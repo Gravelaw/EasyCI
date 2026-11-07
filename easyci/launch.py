@@ -4,6 +4,7 @@ Order: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB. 
 refused and the caller's Job object kills its processes on close, use a one-shot Task Scheduler
 task (no execution time limit). If the Job does not kill on close, start detached inside it.
 """
+import json
 import os
 import pathlib
 import subprocess
@@ -64,8 +65,17 @@ def task_name(run_id):
     return f'EasyCI-{run_id}'
 
 
+def write_launch_env(rd):
+    # A Task Scheduler process starts from a fresh logon environment, so EASYCI_* settings
+    # (home, tool overrides, intervals; never secrets) are handed over in a file. required_env
+    # values are deliberately not written: such jobs fail with a clear 'missing variable' reason.
+    env = {k: v for k, v in os.environ.items() if k.startswith('EASYCI_') and k != 'EASYCI_LAUNCH'}
+    (pathlib.Path(rd) / 'launch-env.json').write_text(json.dumps(env, indent=2, sort_keys=True), encoding='utf-8')
+
+
 def schtasks(rd, run_id):
     from xml.sax.saxutils import escape
+    write_launch_env(rd)
     cmd = command(rd, windowless=True)
     args = ' '.join(f'"{a}"' for a in cmd[1:])
     xml = f'''<?xml version="1.0" encoding="UTF-16"?>
