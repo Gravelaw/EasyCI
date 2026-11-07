@@ -1,0 +1,38 @@
+# EasyCI settings for JuliaFlow (spec section 8.4), kept outside the JuliaFlow repository.
+# Use it with:  easyci run --repo "D:\Julia Project" --profile pr --config examples\juliaflow\easyci.yml
+#
+# JuliaFlow's execution-policy job makes hosted Actions skip everything, so a literal import
+# would honestly skip every job. Here that gate is skipped and each PR job is delegated to
+# JuliaFlow's own proven runner (scripts/ci/wsl.mjs --job <name>), which drives WSL itself,
+# so EasyCI runs it on the Windows host (backend native) inside a clean clone of the commit.
+version: 1
+backend: native
+report: true
+profiles:
+  pr:   {event: pull_request, jobs: [web, julia, debian-release-gate]}
+  push: {event: push,         jobs: [web, julia]}
+jobs:
+  execution-policy:
+    skip: true                          # hosted-only gate; EasyCI decides locally
+  web:
+    when: always                        # ignore the workflow `if:` for this job
+    backend: native
+    timeout_minutes: 360
+    stall_minutes: 30
+    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job web --cache cold
+    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/web/**]
+  julia:
+    when: always
+    backend: native
+    timeout_minutes: 360
+    stall_minutes: 45                   # Pkg.instantiate and precompile are quiet
+    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job julia --cache cold
+    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/julia/**]
+  debian-release-gate:
+    when: always
+    backend: native
+    timeout_minutes: 180
+    stall_minutes: 45
+    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job debian-release-gate --cache cold
+    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/debian-release-gate/**]
+    required_env: []
