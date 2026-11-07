@@ -66,7 +66,9 @@ def get_run(run_id, repo=None):
             raise Fail(7, 'RUN_NOT_FOUND', f'No run {run_id} found under {store.home()}.', 'Run: easyci list')
         return rd
     root = snapshot.repo_root(repo or os.getcwd())
-    dirs = store.run_dirs(store.project_slug(root)) if root else store.run_dirs()
+    dirs = store.run_dirs(store.project_slug(root)) if root else []
+    if not dirs and not repo:
+        dirs = store.run_dirs()  # cwd is not a project with runs: fall back to the latest run anywhere
     if not dirs:
         raise Fail(7, 'RUN_NOT_FOUND', 'There are no runs yet.', 'Start one with: easyci run')
     return dirs[-1]
@@ -79,6 +81,7 @@ def view(rd):
     gh = report.get('github') or run.get('github') or {}
     data = {k: run.get(k) for k in ('run_id', 'project', 'repo', 'commit', 'tree', 'base', 'event', 'profile', 'state',
                                     'stalled', 'launch', 'reason', 'created_at', 'started_at', 'finished_at')}
+    data['launch'] = data['launch'] or (store.read_json(rd / 'launch.json') or {}).get('launch')
     data['elapsed_s'] = store.elapsed(run) if run.get('started_at') else 0
     data['heartbeat_at'] = beat.get('at')
     data['sealed'] = (rd / 'sha256.json').exists()
@@ -286,6 +289,11 @@ def cmd_run(args):
     deadline = time.time() + 5
     while time.time() < deadline and not (rd / 'heartbeat.json').exists():
         time.sleep(0.1)
+    if not (rd / 'heartbeat.json').exists() and pid and not store.pid_alive(pid):
+        err = (rd / 'supervisor.err').read_text(encoding='utf-8', errors='replace')[-500:]
+        store.log(f'{run_id}: supervisor exited at once: {err}')
+        raise Fail(10, 'SUPERVISOR_FAILED', f'The supervisor stopped right after starting: {err.strip()[-200:]}',
+                   f'See {rd / "supervisor.err"}; the run will be marked interrupted.')
     data = view(rd)
     if args.wait:
         data = wait_for(rd)
@@ -318,10 +326,12 @@ def cmd_status(args):
 
 
 def cmd_list(args):
-    root = snapshot.repo_root(args.repo or os.getcwd()) if args.repo or snapshot.repo_root(os.getcwd()) else None
+    root = snapshot.repo_root(args.repo or os.getcwd())
     if args.repo and not root:
         raise Fail(7, 'REPO_NOT_FOUND', f'{args.repo} is not a git repository.', 'Pass --repo with your project folder.')
-    dirs = store.run_dirs(store.project_slug(root) if root else None)
+    dirs = store.run_dirs(store.project_slug(root)) if root else []
+    if not dirs and not args.repo:
+        dirs = store.run_dirs()
     runs = [view(rd) for rd in reversed(dirs)]
     if args.state:
         runs = [r for r in runs if r['state'] == args.state]

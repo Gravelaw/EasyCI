@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import secrets
 import shutil
 import socket
@@ -139,7 +140,8 @@ def make_writable_and_remove(path):
 def project_slug(repo):
     path = str(pathlib.Path(repo).resolve())
     key = path.lower() if os.name == 'nt' else path
-    return f'{pathlib.Path(path).name}-{hashlib.sha256(key.encode()).hexdigest()[:6]}'
+    name = re.sub(r'[^A-Za-z0-9._-]+', '-', pathlib.Path(path).name).strip('-') or 'repo'
+    return f'{name}-{hashlib.sha256(key.encode()).hexdigest()[:6]}'
 
 
 def project_dir(slug):
