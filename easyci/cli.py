@@ -558,6 +558,12 @@ def cmd_setup(args):
     return result
 
 
+def cmd_mcp(args):
+    from easyci import mcp
+    mcp.serve()
+    return None
+
+
 def cmd_dashboard(args):
     from easyci import dashboard
 
@@ -651,6 +657,7 @@ def build_parser():
     p.add_argument('--commit', action='store_true', help='write and commit only those files')
     p.add_argument('--desktop', action='store_true', help='put a "Run checks" launcher on the Desktop')
     p.add_argument('--run', action='store_true', help='start a run afterwards')
+    add('mcp', cmd_mcp, 'Serve the EasyCI tools to an AI agent over MCP (stdio).')
     p = add('dashboard', cmd_dashboard, 'Open a page on this PC that shows runs and can start or cancel them.')
     p.add_argument('--port', type=int, default=8765)
     p.add_argument('--open', action='store_true', help='open it in the browser')
