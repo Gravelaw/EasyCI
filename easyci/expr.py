@@ -162,7 +162,7 @@ class Parser:
                                     len(rest) == 2 and rest[1] in ('outcome', 'conclusion'))) or
               head == 'matrix' or
               (head == 'strategy' and rest in (('job-index',), ('job-total',), ('fail-fast',), ('max-parallel',)))
-              or (head == 'job' and rest == ('status',)))
+              or (head == 'job' and (rest == ('status',) or (len(rest) >= 2 and rest[0] == 'services'))))
         if not ok:
             self.fail()
 

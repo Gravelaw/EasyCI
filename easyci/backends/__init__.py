@@ -117,6 +117,9 @@ def get(backend_id):
         return native.Fake()
     if backend_id.startswith('wsl'):
         return wsl.Wsl(backend_id.partition(':')[2] or None)
+    if backend_id.startswith('podman:'):
+        from easyci.backends import podman
+        return podman.Podman(backend_id.partition(':')[2])
     raise ValueError(f'unknown backend {backend_id}')
 
 

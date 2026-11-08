@@ -130,16 +130,17 @@ class Wsl:
     def exists(self, path):
         return wsl_run(self.distro, f'test -d {shlex.quote(path)}')[0] == 0
 
-    def start(self, shell, body, env, cwd, job_dir, index):
+    def start(self, shell, body, env, cwd, job_dir, index, command=None):
         steps = pathlib.Path(job_dir) / 'steps'
         steps.mkdir(parents=True, exist_ok=True)
         script, wrapper, pgid = steps / f'{index}.sh', steps / f'{index}.wrap.sh', steps / f'{index}.pgid'
         script.write_bytes(body.replace('\r\n', '\n').encode('utf-8'))
         run = 'bash --noprofile --norc -eo pipefail' if shell == 'bash' else 'sh -e'
         q = shlex.quote
+        last = command or f'exec {run} {q(to_linux(script))}'
         wrapper.write_bytes((f'echo $$ > {q(to_linux(pgid))}\ncd {q(cwd)} || exit 1\n'
                              '[ -n "${EASYCI_PATH_PREPEND:-}" ] && export PATH="$EASYCI_PATH_PREPEND:$PATH"\n'
-                             f'exec {run} {q(to_linux(script))}\n').encode('utf-8'))
+                             f'{last}\n').encode('utf-8'))
         names = [k for k in env if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)]
         full_env = {**os.environ, **{k: env[k] for k in names}, 'WSLENV': ':'.join(names)}
         popen = subprocess.Popen([wsl_exe(), '-d', self.distro, '--exec', 'setsid', '--wait', 'bash', to_linux(wrapper)],

@@ -13,7 +13,8 @@ class ConfigError(Exception):
     pass
 
 
-TOP_KEYS = {'version', 'backend', 'report', 'pr_comment', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths',
+TOP_KEYS = {'version', 'backend', 'container_backend', 'report', 'pr_comment', 'profiles', 'jobs', 'retention', 'gpu',
+            'busy_paths',
             'artifact_threshold_mb', 'data',
             'busy_stale_minutes',
             'busy_wait_minutes'}
@@ -23,7 +24,8 @@ SERVICES = {'postgres'}  # process-based services on the wsl backend (spec Phase
 PROFILE_KEYS = {'event', 'jobs', 'workflow'}
 WORKFLOW_IGNORED = {'name', 'on', True, 'env', 'defaults', 'permissions', 'concurrency', 'jobs', 'run-name'}
 JOB_IGNORED = {'permissions', 'concurrency'}
-JOB_SUPPORTED = {'name', 'needs', 'if', 'runs-on', 'steps', 'env', 'defaults', 'outputs', 'timeout-minutes'} | JOB_IGNORED
+JOB_SUPPORTED = {'name', 'needs', 'if', 'runs-on', 'steps', 'env', 'defaults', 'outputs', 'timeout-minutes',
+                 'container', 'services'} | JOB_IGNORED
 STEP_KEYS = {'name', 'id', 'if', 'run', 'uses', 'with', 'env', 'shell', 'working-directory', 'continue-on-error',
              'timeout-minutes'}
 SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python': ('python', 'python-version'),
@@ -31,13 +33,13 @@ SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python':
          'actions/setup-go': ('go', 'go-version')}
 CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')  # local caches since Phase 1
 SHELLS = {'bash', 'sh', 'pwsh', 'powershell', 'cmd'}
-BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?)\Z')
+BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?|podman:[A-Za-z0-9._-]+)\Z')
 LOCKFILES = ('package-lock.json', 'Project.toml', 'Manifest.toml', 'uv.lock', 'poetry.lock')
 
 
 def backend_id(value, where):
     if not isinstance(value, str) or not BACKEND.match(value):
-        raise ConfigError(f'{where}: backend must be native, wsl or wsl:<distro> (got {value!r})')
+        raise ConfigError(f'{where}: backend must be native, wsl, wsl:<distro> or podman:<distro> (got {value!r})')
     return value
 
 
@@ -70,6 +72,8 @@ def load_config(text, source='easyci.yml'):
     if not isinstance(cfg.get('busy_paths', []), list) or not all(isinstance(p, str) and p.strip()
                                                                   for p in cfg.get('busy_paths', [])):
         raise ConfigError(f'{source}: busy_paths must be a list of glob strings')
+    if 'container_backend' in cfg and not str(cfg['container_backend']).startswith('podman:'):
+        raise ConfigError(f'{source}: container_backend must be podman:<distro>')
     if 'artifact_threshold_mb' in cfg:
         number(cfg['artifact_threshold_mb'], f'{source}: artifact_threshold_mb')
     if not isinstance(cfg.get('data', []), list) or not all(isinstance(p, str) and p.strip() for p in cfg.get('data', [])):
@@ -317,6 +321,35 @@ def plan_step(index, step, ctx):
     return out
 
 
+def plan_containers(job, ctx):
+    """(container | None, {service id: spec}) from a job's `container:` and `services:` keys."""
+    from easyci.backends.podman import parse_options
+
+    def spec(value, where):
+        value = {'image': value} if isinstance(value, str) else value
+        if not isinstance(value, dict) or not value.get('image'):
+            raise Unsupported(f'unsupported_container:{where} needs an image')
+        extra = set(value) - {'image', 'env', 'ports', 'options'}
+        if extra:
+            raise Unsupported(f'unsupported_container:{where}.{sorted(extra)[0]}')
+        value = expr.interpolate(dict(value), ctx)
+        try:
+            parse_options(value.get('options'))
+        except ValueError as error:
+            raise Unsupported(f'unsupported_container:{where} options {error}') from None
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:@-]*', str(value['image'])):
+            raise Unsupported(f'unsupported_container:{where} image {value["image"]}')
+        return {'image': str(value['image']), 'env': {k: expr.to_str(v) for k, v in (value.get('env') or {}).items()},
+                'ports': list(value.get('ports') or []), 'options': value.get('options') or ''}
+    container = spec(job['container'], 'container') if job.get('container') else None
+    services = {}
+    for sid, value in (job.get('services') or {}).items():
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]*', str(sid)):
+            raise Unsupported(f'unsupported_container:service name {sid}')
+        services[str(sid)] = spec(value, f'services.{sid}')
+    return container, services
+
+
 MAX_MATRIX = 256
 
 
@@ -443,8 +476,19 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
     except Unsupported as error:
         reasons.append(str(error))
         backend = backend or 'native'
+    try:
+        out['container'], out['gh_services'] = plan_containers(job, {'github': gh, 'matrix': matrix or {}})
+    except Unsupported as error:
+        reasons.append(str(error))
+        out['container'], out['gh_services'] = None, {}
+    if (out['container'] or out['gh_services']) and not str(backend).startswith('podman:'):
+        if cfg.get('container_backend') and 'backend' not in jcfg and not inp.get('backend'):
+            backend, why = cfg['container_backend'], 'container/services: container_backend from easyci.yml'
+        else:
+            reasons.append('unsupported_container:container/services need a podman backend '
+                           '(set container_backend: podman:<distro> in easyci.yml)')
     out['backend'], out['backend_reason'] = backend, why
-    if out['services'] and not str(backend).startswith('wsl'):
+    if out['services'] and not str(backend).startswith(('wsl', 'podman')):
         reasons.append(f'unsupported_services:{",".join(out["services"])} needs a wsl backend')
     if out['skip']:
         notes.append('skipped by easyci.yml')

@@ -231,6 +231,16 @@ def check_backends(plan):
             if not native.git_bash():
                 raise Fail(3, 'BASH_NOT_FOUND', 'Git Bash was not found for the native backend.',
                            'Install Git for Windows, or set EASYCI_BASH to its bash.exe.')
+        if backend.startswith('podman:'):
+            from easyci.backends import wsl
+            distro = backend.partition(':')[2]
+            if distro not in {d['name'] for d in wsl.distros() or []}:
+                raise Fail(3, 'DISTRO_NOT_FOUND', f'WSL distro {distro} (for containers) was not found.',
+                           'Create it and install podman in it, or change container_backend in easyci.yml.')
+            if wsl.wsl_run(distro, 'command -v podman', timeout=60)[0] != 0:
+                raise Fail(3, 'PODMAN_NOT_FOUND', f'podman is not installed in WSL distro {distro}.',
+                           f'Run: wsl -d {distro} -u root -- apt-get install -y podman')
+            continue
         if backend.startswith('wsl'):
             from easyci.backends import wsl
             found = wsl.distros()

@@ -71,6 +71,77 @@ class RealHost(EasyCITest):
         self.assertEqual(code, 0, data)
 
 
+PODMAN = os.environ.get('EASYCI_TEST_PODMAN_DISTRO')
+
+
+@unittest.skipUnless(ENABLED and PODMAN, 'set EASYCI_INTEGRATION=1 and EASYCI_TEST_PODMAN_DISTRO=<a distro with podman>')
+class RealPodman(EasyCITest):  # Phase 3
+    def setUp(self):
+        super().setUp()
+        os.environ.pop('EASYCI_WSL', None)
+
+    def test_job_container_and_service(self):
+        text = """\
+on: push
+jobs:
+  inside:
+    runs-on: ubuntu-latest
+    container: docker.io/library/alpine:3.20
+    services:
+      cache:
+        image: docker.io/library/redis:7-alpine
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - id: probe
+        run: |
+          cat /etc/alpine-release
+          test -f data.txt
+          printf 'PING\\r\\n' | nc -w 3 cache 6379 | grep -q PONG && echo "service by name: ok"
+          echo "where=$(cat /etc/alpine-release)" >> "$GITHUB_OUTPUT"
+      - run: echo "output=${{ steps.probe.outputs.where }}"
+  outside:
+    runs-on: ubuntu-latest
+    services:
+      cache:
+        image: docker.io/library/redis:7-alpine
+        ports: ['6379']
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    steps:
+      - run: |
+          exec 3<>/dev/tcp/127.0.0.1/${{ job.services.cache.ports['6379'] }}
+          printf 'PING\\r\\n' >&3; read -t 5 reply <&3; echo "reply=$reply"; [[ $reply == +PONG* ]]
+"""
+        repo = self.make_repo(text, {'data.txt': 'x\n', 'easyci.yml': f'container_backend: podman:{PODMAN}\n'})
+        code, doc, _ = self.call('run', '--repo', repo, '--no-report')
+        self.assertEqual(code, 0, doc)
+        run_id = doc['data']['run_id']
+        code, data = self.wait(run_id, timeout=900)  # first use pulls the images
+        self.assertEqual((code, data['state']), (0, 'passed'), json.dumps(data))
+        rd = store.find_run(run_id)
+        inside = (rd / 'jobs/inside/log.txt').read_text(encoding='utf-8')
+        self.assertIn('service by name: ok', inside)
+        self.assertRegex(inside, r'output=3\.20')
+        self.assertIn('reply=+PONG', (rd / 'jobs/outside/log.txt').read_text(encoding='utf-8'))
+        from easyci.backends import wsl
+        code, text = wsl.wsl_run(PODMAN, f'podman ps -a --format "{{{{.Names}}}}" | grep -c easyci-{run_id.lower()} || true')
+        self.assertEqual(text.strip(), '0', 'containers removed')
+
+    def test_cancel_stops_the_job_container(self):
+        text = ('on: push\njobs:\n  slow:\n    runs-on: ubuntu-latest\n    container: docker.io/library/alpine:3.20\n'
+                '    steps:\n      - run: echo started; sleep 600\n')
+        repo = self.make_repo(text, {'easyci.yml': f'container_backend: podman:{PODMAN}\n'})
+        code, doc, _ = self.call('run', '--repo', repo, '--no-report')
+        run_id = doc['data']['run_id']
+        log = lambda: store.find_run(run_id) / 'jobs/slow/log.txt'  # noqa: E731
+        self.until(lambda: log().exists() and 'started' in log().read_text(encoding='utf-8'), timeout=300)
+        code, doc, _ = self.call('cancel', run_id)
+        self.assertEqual(doc['data']['state'], 'cancelled')
+        from easyci.backends import wsl
+        code, text = wsl.wsl_run(PODMAN, f'podman ps -a --format "{{{{.Names}}}}" | grep -c easyci-{run_id.lower()} || true')
+        self.assertEqual(text.strip(), '0', 'containers removed after cancel')
+
+
 @unittest.skipUnless(ENABLED and DISTRO, 'set EASYCI_INTEGRATION=1 and EASYCI_TEST_DISTRO=<a disposable distro>')
 class RealWsl(EasyCITest):
     def setUp(self):

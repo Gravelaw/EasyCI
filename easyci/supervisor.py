@@ -372,6 +372,13 @@ class Supervisor:
         try:
             self.marker(f'job {jid} on {job["backend"]} ({self.run.get("platforms", {}).get(job["backend"], "")})')
             self.service_env = {}
+            self.job_services = {}
+            if job.get('container') or job.get('gh_services'):
+                self.marker('starting containers: ' + ', '.join(
+                    ([f'job container {job["container"]["image"]}'] if job.get('container') else []) +
+                    [f'{sid} ({spec["image"]})' for sid, spec in job.get('gh_services', {}).items()]))
+                self.job_services = backend.start_job(self.run_id, jid, ws, job_dir, job.get('container'),
+                                                      job.get('gh_services'))
             if job.get('services'):
                 self.service_env = backend.start_services(job['services'], self.run_id, jid)
                 # The generated password is masked everywhere, including inside DATABASE_URL.
@@ -486,7 +493,7 @@ class Supervisor:
         base_env.update(getattr(self, 'service_env', {}) or {})
         ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os, 'arch': 'X64', 'temp': base_env['RUNNER_TEMP']},
                'steps': {}, 'env': dict(passed), 'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
-               'job': {'status': 'success'}, '__hash_files__': lambda patterns: backend.hash_files(ws, patterns)}
+               'job': {'status': 'success', 'services': getattr(self, 'job_services', {}) or {}}, '__hash_files__': lambda patterns: backend.hash_files(ws, patterns)}
         job_env = dict(passed)
         for layer in job.get('env_layers') or [job['env']]:  # workflow env first, then job env
             job_env.update(expr.interpolate(layer, {**ctx, 'env': dict(job_env)}))
@@ -498,7 +505,8 @@ class Supervisor:
             index = step['index']
             rec = {'index': index, 'name': step['name'], 'kind': step['kind'], 'started_at': store.iso()}
             record.append(rec)
-            ctx.update(status=status, env={**job_env, **extra_env}, job={'status': status})  # job_env holds `passed`
+            ctx.update(status=status, env={**job_env, **extra_env},
+                       job={'status': status, 'services': getattr(self, 'job_services', {}) or {}})  # job_env holds `passed`
             if self.cancelled():
                 rec['outcome'] = 'cancelled'
                 return 'cancelled', 'cancelled'
