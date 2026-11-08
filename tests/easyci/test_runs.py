@@ -430,6 +430,15 @@ jobs:
         code, data = self.wait(self.start(self.make_repo(workflow), '--no-report')['run_id'])
         self.assertEqual((code, data['state']), (1, 'failed'), data)
 
+    def test_artifact_inputs_see_step_env(self):
+        workflow = ('on: push\njobs:\n  ar:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: echo kept > result.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        env: {ARTIFACT_PATH: result.txt}\n'
+                    '        with: {name: res, path: "${{ env.ARTIFACT_PATH }}", if-no-files-found: error}\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        self.assertEqual((self.run_dir(data['run_id']) / 'jobs/ar/artifacts/res/result.txt').read_text().strip(), 'kept')
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'

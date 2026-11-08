@@ -481,7 +481,9 @@ class Supervisor:
             self.marker('cache step skipped (local)')
             return True, {}
         if kind == 'upload-artifact':
-            with_ = expr.interpolate(step['with'], ctx)
+            # Inputs see the job env plus this step's own `env:`, as run scripts do.
+            step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
+            with_ = expr.interpolate(step['with'], {**ctx, 'env': {**ctx['env'], **step_env}})
             name = re.sub(r'[^A-Za-z0-9._-]', '_', with_.get('name') or 'artifact')
             paths = [p for p in str(with_.get('path', '')).splitlines() if p.strip()]
             copied = backend.collect(ws, paths, job_dir / 'artifacts' / name)
