@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 
-from easyci import backends, expr, github, launch, snapshot, store
+from easyci import backends, expr, github, launch, snapshot, store, workflow
 
 RESULT = {'passed': 'success', 'skipped': 'skipped', 'cancelled': 'cancelled'}
 SECRET_NAME = re.compile(r'TOKEN|SECRET|PASSWORD|KEY', re.I)
@@ -312,6 +312,7 @@ class Supervisor:
                   else 'failure' if any(r == 'failure' for r in results) else 'skipped')
         if job['when'] != 'always':
             ctx = {'github': self.plan['github'], 'needs': needs, 'status': status, 'env': job['env'],
+                   'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
                    'runner': {'os': 'Windows' if job['backend'] == 'native' else 'Linux'}}
             if not expr.condition(job['if'], ctx):
                 return 'skipped', 'condition_false' if job['if'] else 'dependency_not_passed', None
@@ -333,8 +334,18 @@ class Supervisor:
 
     def run_job(self, job):
         jid, jr = job['id'], self.job_rec(job['id'])
-        needs = {n: {'result': RESULT.get(self.job_rec(n)['state'], 'failure'), 'outputs': self.outputs.get(n, {})}
-                 for n in job['needs']}
+        needs = {}
+        for n in job['needs']:  # a matrix job's dependents see all its combinations as one result
+            group = workflow.members(self.plan['jobs'], n)
+            outputs = {}
+            for member in group:
+                outputs.update(self.outputs.get(member['id'], {}))
+            needs[n] = {'result': workflow.group_result([RESULT.get(self.job_rec(m['id'])['state'], 'failure')
+                                                         for m in group]), 'outputs': outputs}
+        if job.get('strategy', {}).get('fail-fast') and any(
+                self.job_rec(m['id'])['state'] in ('failed', 'timed_out', 'interrupted')
+                for m in workflow.members(self.plan['jobs'], job.get('group', job['id'])) if m['id'] != job['id']):
+            return self.end_job(jr, 'cancelled', 'fail_fast')
         if self.cancelled():
             return self.end_job(jr, 'cancelled', 'cancelled')
         verdict = self.check_job(job, jr, needs)
@@ -446,7 +457,9 @@ class Supervisor:
         # required_env values are the lowest layer of the `env` context, so `if:`, names and `with:`
         # see what run-script interpolation sees; workflow/job env and exported values win.
         passed = {name: base_env[name] for name in job['required_env']}
-        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os}, 'steps': {}, 'env': dict(passed)}
+        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os, 'arch': 'X64', 'temp': base_env['RUNNER_TEMP']},
+               'steps': {}, 'env': dict(passed), 'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
+               'job': {'status': 'success'}}
         job_env = dict(passed)
         for layer in job.get('env_layers') or [job['env']]:  # workflow env first, then job env
             job_env.update(expr.interpolate(layer, {**ctx, 'env': dict(job_env)}))
@@ -458,7 +471,7 @@ class Supervisor:
             index = step['index']
             rec = {'index': index, 'name': step['name'], 'kind': step['kind'], 'started_at': store.iso()}
             record.append(rec)
-            ctx.update(status=status, env={**job_env, **extra_env})  # job_env already holds `passed`
+            ctx.update(status=status, env={**job_env, **extra_env}, job={'status': status})  # job_env holds `passed`
             if self.cancelled():
                 rec['outcome'] = 'cancelled'
                 return 'cancelled', 'cancelled'

@@ -488,6 +488,24 @@ jobs:
         code, data = self.wait(run['run_id'])
         self.assertEqual((code, data['state']), (0, 'passed'), data)
 
+    def test_matrix_runs_each_combination_with_fail_fast(self):
+        workflow = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: {v: [1, 2, 3]}\n'
+                    '    steps:\n      - run: echo "v=${{ matrix.v }} of ${{ strategy.job-total }}"; test ${{ matrix.v }} != 2\n'
+                    '  after:\n    needs: t\n    if: always()\n    runs-on: ubuntu-latest\n'
+                    "    steps:\n      - run: echo \"t was ${{ needs.t.result }}\"\n")
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        states = {j['name']: (j['state'], j.get('reason')) for j in data['jobs']}
+        self.assertEqual(states, {'t-1': ('passed', None), 't-2': ('failed', 'step_failed'),
+                                  't-3': ('cancelled', 'fail_fast'), 'after': ('passed', None)}, data)
+        rd = self.run_dir(data['run_id'])
+        self.assertIn('v=1 of 3', (rd / 'jobs/t-1/log.txt').read_text())
+        self.assertIn('t was failure', (rd / 'jobs/after/log.txt').read_text())
+        # Without fail-fast every combination runs.
+        repo = self.make_repo(workflow.replace('    strategy:\n', '    strategy:\n      fail-fast: false\n'), name='nofail')
+        code, data = self.wait(self.start(repo, '--no-report', '--backend', 'fake')['run_id'])
+        self.assertEqual({j['name']: j['state'] for j in data['jobs']},
+                         {'t-1': 'passed', 't-2': 'failed', 't-3': 'passed', 'after': 'passed'})
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'

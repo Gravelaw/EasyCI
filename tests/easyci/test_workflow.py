@@ -63,11 +63,11 @@ class JuliaFlowImport(unittest.TestCase):
         self.assertEqual(j['debian-release-gate']['timeout_minutes'], 180)
         self.assertEqual(j['julia']['stall_minutes'], 45)
 
-    def test_release_candidate_dispatch_is_unsupported_honestly(self):
+    def test_release_candidate_dispatch_is_imported(self):
+        # Phase 1: github.event.repository.default_branch is known, so this job now plans honestly.
         plan = workflow.build_plan(juliaflow(), {}, {**INP, 'event': 'workflow_dispatch', 'workflow': 'release-candidate.yml'})
         gate = jobs(plan)['debian-release-gate']
-        self.assertEqual(gate['predicted'], 'unsupported')
-        self.assertIn('github.event.repository.default_branch', gate['predicted_reason'])
+        self.assertNotEqual(gate['predicted'], 'unsupported', gate.get('predicted_reason'))
 
 
 class Mapping(unittest.TestCase):
@@ -109,9 +109,7 @@ class Mapping(unittest.TestCase):
                  'runs-on: ubuntu-latest\n    steps: [{uses: actions/checkout@v4, with: {submodules: true}}]':
                      'unsupported_checkout:submodules',
                  'runs-on: ubuntu-latest\n    steps: [{uses: actions/checkout@v4, with: {ref: other}}]':
-                     'unsupported_checkout:ref other',
-                 'runs-on: ubuntu-latest\n    strategy: {matrix: {os: [a, b]}}\n    steps: [{run: x}]':
-                     'unsupported_job_key:strategy (matrix is Phase 1)'}
+                     'unsupported_checkout:ref other'}
         for body, reason in cases.items():
             with self.subTest(reason=reason):
                 plan = self.plan('on: pull_request\njobs:\n  j:\n    ' + body + '\n')
@@ -180,3 +178,64 @@ class Mapping(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Matrix(unittest.TestCase):
+    def plan(self, text, cfg=None, **inp):
+        return workflow.build_plan(single(text), cfg or {}, {**INP, 'event': 'push', 'ref_name': 'main', **inp})
+
+    def test_cartesian_product_with_include_and_exclude(self):
+        text = """\
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu, windows]
+        node: [18, 20]
+        exclude:
+          - {os: windows, node: 18}
+        include:
+          - {os: ubuntu, experimental: true}
+          - {os: macos, node: 22}
+    steps:
+      - run: echo ${{ matrix.os }} ${{ matrix.node }}
+  after:
+    needs: test
+    runs-on: ubuntu-latest
+    steps: [{run: echo done}]
+"""
+        plan = self.plan(text)
+        ids = [j['id'] for j in plan['jobs']]
+        # Ids and names list every matrix value, including ones an `include` entry added (as GitHub's names do).
+        self.assertEqual(ids, ['test-ubuntu-18-true', 'test-ubuntu-20-true', 'test-windows-20', 'test-macos-22', 'after'])
+        by = {j['id']: j for j in plan['jobs']}
+        self.assertEqual(by['test-ubuntu-18-true']['matrix'], {'os': 'ubuntu', 'node': 18, 'experimental': True})
+        self.assertNotIn('experimental', by['test-windows-20']['matrix'])
+        self.assertEqual(by['test-ubuntu-20-true']['name'], 'test (ubuntu, 20, true)')
+        self.assertEqual(by['test-macos-22']['strategy']['job-total'], 4)
+        self.assertEqual({j['group'] for j in plan['jobs'][:4]}, {'test'})
+        self.assertEqual(by['after']['needs'], ['test'])
+
+    def test_runs_on_from_the_matrix_and_fromjson(self):
+        text = ('on: push\njobs:\n  t:\n    runs-on: ${{ matrix.os }}\n    strategy:\n'
+                "      matrix: '${{ fromJSON(''{\"os\": [\"ubuntu-latest\", \"windows-latest\"]}'') }}'\n"
+                '    steps: [{run: echo hi}]\n')
+        plan = self.plan(text, default_backend='fake')
+        self.assertEqual([(j['id'], j['backend']) for j in plan['jobs']],
+                         [('t-ubuntu-latest', 'fake'), ('t-windows-latest', 'native')])
+
+    def test_matrix_from_needs_outputs_is_unsupported(self):
+        text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n'
+                '      matrix: ${{ fromJSON(needs.a.outputs.m) }}\n    steps: [{run: echo hi}]\n')
+        job = self.plan(text)['jobs'][0]
+        self.assertEqual(job['predicted'], 'unsupported')
+        self.assertTrue(job['predicted_reason'].startswith('unsupported_matrix:'), job['predicted_reason'])
+
+    def test_profile_selects_every_combination(self):
+        text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: {v: [1, 2]}\n'
+                '    steps: [{run: echo hi}]\n  other:\n    runs-on: ubuntu-latest\n    steps: [{run: echo hi}]\n')
+        plan = self.plan(text, {'profiles': {'p': {'event': 'push', 'jobs': ['t']}}}, profile='p')
+        self.assertEqual([j['id'] for j in plan['jobs']], ['t-1', 't-2'])
+        self.assertTrue(all(j['reported'] for j in plan['jobs']))

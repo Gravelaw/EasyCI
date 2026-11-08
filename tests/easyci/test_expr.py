@@ -51,10 +51,34 @@ class ExpressionSubset(unittest.TestCase):
         self.assertEqual(expr.interpolate('v=${{ steps.s.outputs.v }} ${{ github.sha }} ${{ true }}', CTX), 'v=42 abc true')
         self.assertEqual(expr.interpolate({'a': ['${{ env.X }}']}, CTX), {'a': ['yes']})
 
+    def test_phase1_functions_comparisons_and_indexing(self):
+        ctx = {**CTX, 'matrix': {'os': 'ubuntu', 'node': 20, 'cfg': {'Mode': 'fast'}},
+               'strategy': {'job-index': 1, 'job-total': 3}, 'env': {'LIST': '["a","b"]', 'X': 'yes'},
+               'steps': {'s': {'outputs': {'v': '42'}, 'outcome': 'success'}},
+               '__hash_files__': lambda patterns: 'h:' + ','.join(patterns)}
+        ev = lambda text: self.ev(text, ctx)  # noqa: E731
+        self.assertTrue(ev("contains(github.ref_name, 'FEAT')"))  # case-insensitive substring
+        self.assertTrue(ev("contains(fromJSON(env.LIST), 'b')") and not ev("contains(fromJSON(env.LIST), 'c')"))
+        self.assertTrue(ev("startsWith(github.ref_name, 'fea') && endsWith(github.ref_name, 'URE')"))
+        self.assertEqual(ev("format('{0}-{1} {{x}}', matrix.os, matrix.node)"), 'ubuntu-20 {x}')
+        self.assertEqual(ev("join(fromJSON(env.LIST), '+')"), 'a+b')
+        self.assertEqual(ev("fromJSON('{\"a\": [1, 2]}').a[1]"), 2)
+        self.assertEqual(ev("matrix['os']"), 'ubuntu')
+        self.assertEqual(ev('matrix.cfg.mode'), 'fast')  # property names ignore case
+        self.assertTrue(ev('matrix.node >= 18 && matrix.node < 22 && strategy.job-index < strategy.job-total'))
+        self.assertTrue(ev("'b' > 'A'") and not ev("'abc' < 1"))  # strings compare case-insensitively; NaN is false
+        self.assertEqual(ev("hashFiles('**/package-lock.json', 'x')"), 'h:**/package-lock.json,x')
+        self.assertEqual(ev('steps.s.outcome'), 'success')
+        self.assertEqual(expr.to_str(ev("toJSON(matrix.cfg)")), '{\n  "Mode": "fast"\n}')
+        self.assertTrue(expr.condition('cancelled()', {**ctx, 'status': 'cancelled'}))
+        self.assertFalse(expr.condition("contains(github.ref_name, 'feat')", {**ctx, 'status': 'failure'}))
+        self.assertEqual(expr.evaluate_value("${{ fromJSON(env.LIST) }}", ctx), ['a', 'b'])
+        self.assertEqual(expr.interpolate("${{ fromJSON(env.LIST) }}", ctx), '["a", "b"]')
+
     def test_unsupported_is_named_not_guessed(self):
-        for text in ("contains(github.ref, 'x')", "startsWith(github.ref, 'r')", "format('{0}', 1)", 'toJSON(github)',
-                     "hashFiles('**/x')", 'secrets.TOKEN', 'vars.X', 'inputs.y', 'github.actor', 'matrix.os',
-                     "github.event.repository.default_branch", 'cancelled()', '1 < 2', "github['sha']", 'steps.s.outcome'):
+        for text in ('secrets.TOKEN', 'vars.X', 'inputs.y', 'github.actor', 'github.event.pull_request.title',
+                     'github.run_id', 'unknownFn(1)', "contains('a')", 'a < b < c', '1 < 2 < 3', 'github.event[0]',
+                     'runner.foo', 'steps.s.bar', 'strategy.nope', 'job.services'):
             with self.subTest(text=text):
                 with self.assertRaises(Unsupported) as ctx:
                     expr.parse(text)

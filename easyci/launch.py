@@ -26,8 +26,9 @@ def interpreter(windowless=False):
 
 
 def command(rd, windowless=False):
-    # -I: ignore PYTHON* variables, user site and cwd; _launch.py adds the package root itself.
-    return [interpreter(windowless), '-I', str(ENTRY), str(rd)]
+    # -E ignores PYTHON* variables and -P keeps the cwd off sys.path (_launch.py adds the package root
+    # itself). Not -I: that also drops the user site, where `pip install --user` puts PyYAML.
+    return [interpreter(windowless), '-E', '-P', str(ENTRY), str(rd)]
 
 
 def job_kills_on_close():

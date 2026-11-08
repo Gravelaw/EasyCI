@@ -167,10 +167,16 @@ def applies(doc, path, inp):
 
 def github_context(inp):
     ref_name = inp['ref_name']
+    repository, default = inp.get('repository') or '', inp.get('default_branch') or ''
     gh = {'sha': inp['commit'], 'ref': ref_name if ref_name.startswith('refs/') else f'refs/heads/{ref_name}',
-          'ref_name': ref_name, 'repository': inp.get('repository') or '', 'event_name': inp['event'], 'event': {}}
+          'ref_name': ref_name, 'ref_type': 'branch', 'repository': repository,
+          'repository_owner': repository.split('/')[0] if '/' in repository else '', 'event_name': inp['event'],
+          'server_url': 'https://github.com', 'head_ref': '', 'base_ref': '',
+          'event': {'repository': {'default_branch': default}}}
     if inp['event'] == 'pull_request':
-        gh['event'] = {'pull_request': {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base']}}}
+        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base']}}
+        gh['head_ref'] = '' if re.fullmatch(r'[0-9a-f]{40}', ref_name) else ref_name
+        gh['base_ref'] = default
     return gh
 
 
@@ -278,7 +284,94 @@ def plan_step(index, step, ctx):
     return out
 
 
-def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
+MAX_MATRIX = 256
+
+
+def slug(value):
+    return re.sub(r'[^A-Za-z0-9._-]+', '-', expr.to_str(value)).strip('-')[:40] or 'x'
+
+
+def expand_matrix(job, gh):
+    """[(combo, strategy)] for a job's strategy.matrix, [] without one. Raises Unsupported.
+
+    Follows GitHub: the cartesian product of the keys, minus `exclude` entries (all their keys
+    match), then `include` entries extend the combinations whose original keys they match, or are
+    added as new combinations when they match none.
+    """
+    strategy = job.get('strategy') or {}
+    raw = strategy.get('matrix')
+    if raw is None:
+        return []
+    try:
+        matrix = expr.evaluate_value(raw, {'github': gh})
+    except Unsupported:
+        raise Unsupported('unsupported_matrix:only literal matrices or fromJSON of literals/github values') from None
+    if not isinstance(matrix, dict):
+        raise Unsupported('unsupported_matrix:matrix must be a mapping')
+    include, exclude = matrix.get('include') or [], matrix.get('exclude') or []
+    keys = [k for k in matrix if k not in ('include', 'exclude')]
+    if any(not isinstance(matrix[k], list) for k in keys) or not isinstance(include, list) or not isinstance(exclude, list):
+        raise Unsupported('unsupported_matrix:values must be lists')
+    combos = [{}]
+    for key in keys:
+        combos = [{**c, key: v} for c in combos for v in matrix[key]]
+    if not keys:
+        combos = []
+    combos = [c for c in combos if not any(isinstance(e, dict) and all(expr.equal(c.get(k), v) for k, v in e.items())
+                                           for e in exclude)]
+    for entry in include:
+        if not isinstance(entry, dict):
+            raise Unsupported('unsupported_matrix:include entries must be mappings')
+        matched = False
+        for combo in combos:
+            original = {k: v for k, v in entry.items() if k in keys}
+            if all(expr.equal(combo.get(k), v) for k, v in original.items()):
+                # extras are added; an entry never overwrites an original matrix value
+                for k, v in entry.items():
+                    if k not in keys and (k not in combo or not original):
+                        combo[k] = v
+                matched = matched or bool(original) or not keys
+        if not matched:
+            combos.append(dict(entry))
+    if not combos:
+        raise Unsupported('unsupported_matrix:the matrix expands to no jobs')
+    if len(combos) > MAX_MATRIX:
+        raise Unsupported(f'unsupported_matrix:{len(combos)} combinations (limit {MAX_MATRIX})')
+    fail_fast = strategy.get('fail-fast', True)
+    if not isinstance(fail_fast, bool):
+        raise Unsupported('unsupported_matrix:fail-fast must be true or false')
+    return [(combo, {'job-index': i, 'job-total': len(combos), 'fail-fast': fail_fast,
+                     'max-parallel': strategy.get('max-parallel', len(combos))}) for i, combo in enumerate(combos)]
+
+
+def plan_matrix_jobs(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
+    """Plan a job, expanding strategy.matrix into one job per combination (id `build-ubuntu-20`,
+    name `build (ubuntu, 20)`, `group` = the workflow's job id)."""
+    try:
+        expanded = expand_matrix(job, gh) if isinstance(job, dict) else []
+    except Unsupported as error:
+        out = plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh)
+        out['unsupported'].append(str(error))
+        return [out]
+    if not expanded:
+        return [plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh)]
+    out, used = [], set()
+    for combo, strategy in expanded:
+        values = [expr.to_str(v) for v in combo.values() if not isinstance(v, (dict, list))]
+        sub = f'{jid}-' + '-'.join(slug(v) for v in values) if values else f'{jid}-{strategy["job-index"]}'
+        while sub in used:
+            sub += f'-{strategy["job-index"]}'
+        used.add(sub)
+        planned = plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=combo, strategy=strategy)
+        planned['id'] = sub
+        planned['group'] = jid
+        if not job.get('name'):
+            planned['name'] = f'{jid} ({", ".join(values)})'
+        out.append(planned)
+    return out
+
+
+def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=None):
     reasons, notes = [], []
     if not isinstance(job, dict):
         raise ConfigError(f'{wf_path}: job {jid} must be a mapping')
@@ -296,14 +389,22 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
            'command': jcfg.get('command'), 'on_kill': jcfg.get('on_kill'),
            'on_kill_minutes': jcfg.get('on_kill_minutes', 10), 'evidence': list(jcfg.get('evidence', [])),
            'required_env': list(jcfg.get('required_env', [])), 'toolchain_policy': dict(jcfg.get('toolchains', {})),
-           'unsupported': reasons, 'notes': notes}
+           'unsupported': reasons, 'notes': notes, 'group': jid, 'matrix': matrix or {}, 'strategy': strategy or {}}
+    if matrix is not None:
+        mctx = {'github': gh, 'matrix': matrix, 'strategy': strategy}
+        try:
+            out['name'] = expr.interpolate(out['name'], mctx)
+            if isinstance(out['runs_on'], (str, list)):
+                out['runs_on'] = expr.interpolate(out['runs_on'], mctx)
+        except Unsupported as error:
+            reasons.append(str(error))
     if isinstance(out['timeout_minutes'], str):
         reasons.append('unsupported_expression:timeout-minutes')
         out['timeout_minutes'] = 360
     backend, why = map_backend(jid, jcfg, cfg, inp)
     try:
         if backend is None:
-            backend, why = runs_on_backend(job.get('runs-on'), cfg, inp)
+            backend, why = runs_on_backend(out['runs_on'], cfg, inp)
     except Unsupported as error:
         reasons.append(str(error))
         backend = backend or 'native'
@@ -331,9 +432,9 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
         notes.append('steps replaced by easyci.yml command; uses: not evaluated')
         return out
     for key in sorted(set(job) - JOB_SUPPORTED):
-        if key == 'strategy' and not (job[key] or {}).get('matrix'):
-            continue
-        reasons.append(f'unsupported_job_key:{key}' + (' (matrix is Phase 1)' if key == 'strategy' else ''))
+        if key == 'strategy':
+            continue  # strategy.matrix is expanded by plan_matrix_jobs
+        reasons.append(f'unsupported_job_key:{key}')
     defaults = {**((wf.get('defaults') or {}).get('run') or {}), **((job.get('defaults') or {}).get('run') or {})}
     skip_steps = jcfg.get('skip_steps', [])
     ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(job.get('runs-on')), 'github': gh}
@@ -359,8 +460,15 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
     return out
 
 
+def members(jobs, group):
+    return [j for j in jobs if j.get('group', j['id']) == group]
+
+
 def order_jobs(jobs):
     by_id, ordered, state = {j['id']: j for j in jobs}, [], {}
+    groups = {}
+    for job in jobs:
+        groups.setdefault(job.get('group', job['id']), []).append(job['id'])
 
     def visit(jid, chain):
         if state.get(jid) == 'done':
@@ -369,9 +477,10 @@ def order_jobs(jobs):
             raise ConfigError(f'needs: cycle {" -> ".join(chain + [jid])}')
         state[jid] = 'active'
         for need in by_id[jid]['needs']:
-            if need not in by_id:
+            if need not in groups:
                 raise ConfigError(f'job {jid} needs unknown job {need}')
-            visit(need, chain + [jid])
+            for member in groups[need]:
+                visit(member, chain + [jid])
         state[jid] = 'done'
         ordered.append(by_id[jid])
     for job in jobs:
@@ -426,25 +535,27 @@ def build_plan(workflows, cfg, inp):
                 raise ConfigError(f'job {jid} exists in several workflows ({", ".join(seen[jid])}); '
                                   'pick one with --workflow or a profile workflow:')
             jcfg = (cfg.get('jobs') or {}).get(jid, {})
-            jobs.append(plan_job(path, doc, jid, job, jcfg, cfg, inp, gh))
+            jobs.extend(plan_matrix_jobs(path, doc, jid, job, jcfg, cfg, inp, gh))
     ordered = order_jobs(jobs)
     if selection:
-        by_id = {j['id']: j for j in ordered}
-        missing = [s for s in selection if s not in by_id]
+        groups = {}
+        for job in ordered:
+            groups.setdefault(job['group'], []).append(job)
+        missing = [s for s in selection if s not in groups]
         if missing:
             raise ConfigError(f'selected job(s) not found for event {inp["event"]}: {", ".join(missing)}')
         include = set()
 
-        def add(jid):
-            if jid not in include:
-                include.add(jid)
-                for need in by_id[jid]['needs']:
+        def add(group):
+            if group not in include:
+                include.add(group)
+                for need in groups[group][0]['needs']:
                     add(need)
-        for jid in selection:
-            add(jid)
-        ordered = [j for j in ordered if j['id'] in include]
+        for group in selection:
+            add(group)
+        ordered = [j for j in ordered if j['group'] in include]
     for job in ordered:
-        job['reported'] = (job['id'] in selection) if selection else not job['skip']
+        job['reported'] = (job['group'] in selection) if selection else not job['skip']
     plan = {'event': inp['event'], 'profile': profile, 'workflow': inp.get('workflow'), 'github': gh,
             'workflows': plan_wfs, 'jobs': ordered, 'gpu': cfg.get('gpu', 'optional'),
             'report': cfg.get('report', True)}
@@ -452,11 +563,22 @@ def build_plan(workflows, cfg, inp):
     return plan
 
 
+def group_result(results):
+    """needs.<job>.result for a job and all its matrix combinations, as on GitHub."""
+    if results and all(r == 'success' for r in results):
+        return 'success'
+    for state in ('failure', 'cancelled'):
+        if state in results:
+            return state
+    return 'skipped'
+
+
 def predict(plan):
     """Literal plan-time reading: outputs of earlier jobs are unknown (empty) until run time."""
     results = {}
     for job in plan['jobs']:
-        needs = {n: {'result': results.get(n, 'skipped'), 'outputs': {}} for n in job['needs']}
+        needs = {n: {'result': group_result([results.get(m['id'], 'skipped') for m in members(plan['jobs'], n)]),
+                     'outputs': {}} for n in job['needs']}
         results_ = [v['result'] for v in needs.values()]
         status = ('success' if all(r == 'success' for r in results_)
                   else 'failure' if any(r == 'failure' for r in results_) else 'skipped')  # same rule as the supervisor
@@ -471,6 +593,7 @@ def predict(plan):
                                             'runner': {'os': 'Linux'}, 'env': {}})
             state, reason = ('run', None) if ok else ('skipped', 'condition_false')
         job['predicted'], job['predicted_reason'] = state, reason
+        results[job['id']] = {'run': 'success', 'skipped': 'skipped', 'unsupported': 'failure'}.get(state, 'failure')
         if reason == 'condition_false' and 'needs.' in str(job['if']):
             job['predicted_note'] = 'outputs of earlier jobs are only known at run time and read as empty here'
         job['run_steps'] = sum(1 for s in job['steps'] if s['kind'] == 'run')
