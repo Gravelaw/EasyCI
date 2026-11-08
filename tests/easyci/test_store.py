@@ -239,12 +239,15 @@ class Removal(EasyCITest):
                 locked = target / 'sub' / 'pack.idx'
                 locked.write_text('x')
                 os.chmod(locked, stat.S_IREAD)
-                real, used = shutil.rmtree, []
+                real, used, real_version = shutil.rmtree, [], tuple(sys.version_info)
 
                 def spy(path, **kwargs):
                     used.extend(kwargs)
                     if version < (3, 12) and 'onexc' in kwargs:
                         raise TypeError("rmtree() got an unexpected keyword argument 'onexc'")
+                    if 'onexc' in kwargs and real_version < (3, 12):  # the real interpreter is 3.11
+                        handler = kwargs.pop('onexc')
+                        kwargs['onerror'] = lambda func, target_, info: handler(func, target_, info[1])
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore', DeprecationWarning)
                         return real(path, **kwargs)
