@@ -502,7 +502,65 @@ def cmd_report(args):
     return data
 
 
+def cmd_promote(args):
+    from easyci import promote
+    rd = get_run(args.run_id, args.repo)
+    try:
+        data = promote.promote(rd, args.artifact, args.to, args.version)
+    except promote.PromoteError as error:
+        raise Fail(1 if error.code in ('TAMPERED', 'ARTIFACT_CHANGED') else 2, error.code, error.message, error.fix) from None
+    say(args, f'Promoted {args.artifact} of run {rd.name} to {data["release"]} ({data["files"]} file(s), receipt.json).')
+    return data
+
+
+def metric_rows(a, b):
+    def flat(run):
+        return {f'{j["name"]}.{k}': v for j in run.get('jobs', []) for k, v in (j.get('metrics') or {}).items()}
+    ma, mb = flat(a), flat(b)
+    rows = []
+    for key in sorted(set(ma) | set(mb)):
+        va, vb = ma.get(key), mb.get(key)
+        change = None
+        if isinstance(va, (int, float)) and isinstance(vb, (int, float)) and not isinstance(va, bool):
+            change = round(vb - va, 6)
+        elif va != vb:
+            change = 'changed'
+        rows.append({'metric': key, 'before': va, 'after': vb, 'change': change})
+    return rows
+
+
+def cmd_compare(args):
+    if args.runs:
+        dirs = [get_run(r, args.repo) for r in args.runs]
+    else:
+        root = find_repo(args.repo)
+        dirs = [rd for rd in reversed(store.run_dirs(store.project_slug(root)))
+                if (store.read_json(rd / 'run.json') or {}).get('state') == 'passed'][:2][::-1]
+    if len(dirs) != 2:
+        raise Fail(7, 'NOT_ENOUGH_RUNS', 'Comparing needs two runs (by default the last two passed runs).',
+                   'Pass two run ids: easyci compare RUN_A RUN_B')
+    a, b = (store.read_json(rd / 'run.json') or {} for rd in dirs)
+    rows = metric_rows(a, b)
+    if not args.json:
+        say(args, f'Metrics of {dirs[0].name} ({a.get("commit", "")[:7]}) -> {dirs[1].name} ({b.get("commit", "")[:7]}):')
+        for row in rows or [{'metric': '(no metrics in either run)', 'before': '', 'after': '', 'change': ''}]:
+            say(args, f'  {row["metric"]}: {row["before"]} -> {row["after"]}'
+                      + (f'  ({row["change"]:+g})' if isinstance(row['change'], (int, float)) else ''))
+        return None
+    return {'before': dirs[0].name, 'after': dirs[1].name, 'metrics': rows}
+
+
 def cmd_verify(args):
+    if args.run_id and pathlib.Path(args.run_id).is_dir() and (pathlib.Path(args.run_id) / 'receipt.json').exists():
+        from easyci import promote
+        problems = promote.verify_release(args.run_id)
+        if problems is None:
+            raise Fail(2, 'NOT_A_RELEASE', f'{args.run_id} has no EasyCI receipt.json.', 'Pass a run id or a release folder.')
+        data = {'release': str(args.run_id), 'ok': not problems, 'mismatches': problems}
+        if problems:
+            raise Fail(1, 'TAMPERED', 'The release changed after promotion: ' + ', '.join(
+                f'{m["path"]} ({m["problem"]})' for m in problems[:10]), 'Promote it again from its run.', data)
+        return data
     rd = get_run(args.run_id, args.repo)
     mismatches = store.verify(rd)
     if mismatches is None:
@@ -676,6 +734,15 @@ def build_parser():
     p = add('doctor', cmd_doctor, 'Check that this PC (and optionally a repo) is ready.')
     p.add_argument('--repo')
     p.add_argument('--config')
+    p = add('promote', cmd_promote, 'Copy a passed run\'s artifact into a durable release folder, with a receipt.')
+    p.add_argument('run_id')
+    p.add_argument('--artifact', required=True)
+    p.add_argument('--to', required=True, help='folder that holds the releases')
+    p.add_argument('--version', help='release name suffix (default: the commit)')
+    p.add_argument('--repo')
+    p = add('compare', cmd_compare, 'Compare the metrics of two runs (default: the last two passed runs).')
+    p.add_argument('runs', nargs='*')
+    p.add_argument('--repo')
     p = add('setup', cmd_setup, 'Get a project ready: detect it, pick where tests run, write a starter workflow.')
     p.add_argument('--repo')
     p.add_argument('--write', action='store_true', help='write the planned files (never overwrites)')
@@ -721,7 +788,10 @@ def human(data):
     if isinstance(data, dict) and 'deleted' in data:
         return f'Deleted {len(data["deleted"])} old run(s).'
     if isinstance(data, dict) and 'mismatches' in data:
-        return f'Evidence of run {data["run_id"]} is intact.'
+        return (f'Release {data["release"]} matches its receipt.' if 'release' in data
+                else f'Evidence of run {data["run_id"]} is intact.')
+    if isinstance(data, dict) and 'receipt' in data:
+        return ''
     if isinstance(data, dict) and 'posted' in data:
         return f'Posted {len(data["posted"])} GitHub status(es).'
     return json.dumps(data, indent=2)

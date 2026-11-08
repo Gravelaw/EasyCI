@@ -6,6 +6,7 @@ after this process is gone).
 import os
 import pathlib
 import posixpath
+import shutil
 import re
 import signal
 import sys
@@ -252,6 +253,8 @@ class Supervisor:
         try:
             self.run['tree'] = snapshot.make_bundle(repo, commit, base, self.rd / 'source.bundle')
             self.run['bundle_sha256'] = store.digest(self.rd / 'source.bundle')
+            if self.plan.get('data'):
+                self.run['data'] = store.data_hashes(repo, self.plan['data'])
         except (snapshot.GitError, OSError) as error:
             self.fail_all('failed', f'snapshot_failed:{error}')
             raise Cancelled from None
@@ -581,6 +584,8 @@ class Supervisor:
             paths = [p for p in str(with_.get('path', '')).splitlines() if p.strip()]
             copied = backend.collect(ws, paths, job_dir / 'artifacts' / name)
             self.marker(f'artifact {name}: {len(copied)} file(s)')
+            if copied:
+                self.offload_artifact(job_dir, name)
             if not copied and with_.get('if-no-files-found', 'warn') == 'error':
                 self.marker(f'no files found for {paths} (if-no-files-found: error)')
                 return False, {'exit_code': 1}
@@ -617,6 +622,24 @@ class Supervisor:
             return False, result
         return proc.popen.returncode == 0, result
 
+    def offload_artifact(self, job_dir, name):
+        """Move an artifact over artifact_threshold_mb out of the run folder into the artifact store
+        (%EASYCI_HOME%/artifacts/<project>/<run>/<job>/<name>, DVC-friendly), leaving a pointer with
+        every file's sha256. The pointer is sealed with the run; `easyci verify` checks the files."""
+        folder = job_dir / 'artifacts' / name
+        files = [p for p in folder.rglob('*') if p.is_file()]
+        size = sum(p.stat().st_size for p in files)
+        if size <= float(self.plan.get('artifact_threshold_mb', 100)) * 2 ** 20:
+            return
+        target = store.artifact_store(self.run['project']) / self.run_id / job_dir.name / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        hashes = {p.relative_to(folder).as_posix(): store.digest(p) for p in files}
+        shutil.move(str(folder), str(target))
+        store.write_json(job_dir / 'artifacts' / f'{name}.pointer.json',
+                         {'schema': 'easyci/1', 'kind': 'artifact-pointer', 'name': name, 'location': str(target),
+                          'size_bytes': size, 'files': hashes})
+        self.marker(f'artifact {name} is {size / 2 ** 20:.0f} MB; stored outside the run folder: {target}')
+
     def step_inputs(self, step, ctx, env):
         step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
         return expr.interpolate(step.get('with') or {}, {**ctx, 'env': {**ctx['env'], **step_env}})
@@ -649,6 +672,10 @@ class Supervisor:
             self.marker(f'download path {path!r} must be a relative path inside the workspace; refusing it')
             return False, {'exit_code': 1}
         roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
+        for pointer in sorted((self.rd / 'jobs').glob('*/artifacts/*.pointer.json')):  # offloaded big artifacts
+            location = pathlib.Path((store.read_json(pointer) or {}).get('location', ''))
+            if location.is_dir():
+                roots.append(location)
         chosen = [p for p in roots if p.name == name] if name else roots
         if name and not chosen:
             self.marker(f'artifact {name} was not uploaded earlier in this run')

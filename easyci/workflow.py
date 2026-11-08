@@ -14,6 +14,7 @@ class ConfigError(Exception):
 
 
 TOP_KEYS = {'version', 'backend', 'report', 'pr_comment', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths',
+            'artifact_threshold_mb', 'data',
             'busy_stale_minutes',
             'busy_wait_minutes'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
@@ -69,6 +70,10 @@ def load_config(text, source='easyci.yml'):
     if not isinstance(cfg.get('busy_paths', []), list) or not all(isinstance(p, str) and p.strip()
                                                                   for p in cfg.get('busy_paths', [])):
         raise ConfigError(f'{source}: busy_paths must be a list of glob strings')
+    if 'artifact_threshold_mb' in cfg:
+        number(cfg['artifact_threshold_mb'], f'{source}: artifact_threshold_mb')
+    if not isinstance(cfg.get('data', []), list) or not all(isinstance(p, str) and p.strip() for p in cfg.get('data', [])):
+        raise ConfigError(f'{source}: data must be a list of paths or globs')
     for key in ('busy_stale_minutes', 'busy_wait_minutes'):
         if key in cfg:
             number(cfg[key], f'{source}: {key}')
@@ -590,7 +595,8 @@ def build_plan(workflows, cfg, inp):
         job['reported'] = (job['group'] in selection) if selection else not job['skip']
     plan = {'event': inp['event'], 'profile': profile, 'workflow': inp.get('workflow'), 'github': gh,
             'workflows': plan_wfs, 'jobs': ordered, 'gpu': cfg.get('gpu', 'optional'),
-            'report': cfg.get('report', True), 'pr_comment': bool(cfg.get('pr_comment', False))}
+            'report': cfg.get('report', True), 'pr_comment': bool(cfg.get('pr_comment', False)),
+            'artifact_threshold_mb': cfg.get('artifact_threshold_mb', 100), 'data': list(cfg.get('data', []))}
     predict(plan)
     return plan
 

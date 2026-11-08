@@ -338,7 +338,7 @@ def write_report(rd, run):
         'decisions': [{'job': j['id'], 'step': s['index'], 'kind': s['kind'], 'decision': s.get('decision')}
                       for j in plan.get('jobs', []) for s in j.get('steps', [])],
         'reproducibility': {**request.get('repro', {}), 'tree': run.get('tree'), 'easyci_version': VERSION,
-                            'host': socket.gethostname()},
+                            'host': socket.gethostname(), 'data': run.get('data', {})},
     }
     write_json(rd / 'report.json', report)
     return report
@@ -385,7 +385,43 @@ def verify(rd):
             mismatches.append({'path': rel, 'problem': 'changed'})
     for rel in sorted(set(actual) - set(expected)):
         mismatches.append({'path': rel, 'problem': 'extra'})
+    for rel in sorted(r for r in expected if r.endswith('.pointer.json') and r in actual):  # offloaded artifacts
+        info = read_json(actual[rel]) or {}
+        location = pathlib.Path(info.get('location', ''))
+        for name, value in sorted((info.get('files') or {}).items()):
+            target = location / name
+            if not target.is_file():
+                mismatches.append({'path': f'{rel}:{name}', 'problem': 'missing'})
+            elif digest(target) != value:
+                mismatches.append({'path': f'{rel}:{name}', 'problem': 'changed'})
     return mismatches
+
+
+def artifact_store(project):
+    return home() / 'artifacts' / project
+
+
+def data_hashes(repo, patterns):
+    """{path: {sha256 | dvc_md5, size}} for the data a run used (spec section 13).
+
+    Paths are relative to the repository folder (data usually lives outside git). A `.dvc` file
+    contributes the md5 DVC recorded for its output instead of hashing the data again."""
+    root, out = pathlib.Path(repo), {}
+    for pattern in patterns:
+        for path in sorted(root.glob(str(pattern).replace('\\', '/'))):
+            if not path.is_file() or path.is_symlink():
+                continue
+            rel = path.relative_to(root).as_posix()
+            if path.suffix == '.dvc':
+                import yaml
+                try:
+                    outs = (yaml.safe_load(path.read_text(encoding='utf-8')) or {}).get('outs') or []
+                except (OSError, yaml.YAMLError):
+                    outs = []
+                out[rel] = {'dvc_md5': [o.get('md5') for o in outs if isinstance(o, dict)], 'size': path.stat().st_size}
+            else:
+                out[rel] = {'sha256': digest(path), 'size': path.stat().st_size}
+    return out
 
 
 def busy_file(repo, patterns, stale_s):
@@ -432,6 +468,7 @@ def clean(keep=None, default=20):
             if rd.name not in protected.values():
                 remove_backend_workspaces(rd, run)
                 make_writable_and_remove(rd)
+                make_writable_and_remove(artifact_store(project.name) / rd.name)
                 deleted.append(rd.name)
     return deleted, kept
 
