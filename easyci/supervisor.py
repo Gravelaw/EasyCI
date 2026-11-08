@@ -119,9 +119,12 @@ class Supervisor:
         self.save()
 
     def redact(self, data):
-        for value in self.secrets:
-            if value:
-                data = data.replace(value, b'***')
+        # Whole values first, then (like GitHub) each line of a multiline secret such as a private
+        # key, because the log is redacted line by line and no single line holds the whole value.
+        parts = [v for v in self.secrets if v]
+        parts += [line.strip() for v in parts if b'\n' in v for line in v.splitlines() if len(line.strip()) >= 4]
+        for value in sorted(set(parts), key=len, reverse=True):
+            data = data.replace(value, b'***')
         return TOKEN_PATTERN.sub(b'***', data)
 
     # ---- lifecycle -------------------------------------------------------------------------
@@ -512,14 +515,32 @@ class Supervisor:
         """Copy a process's output into the job log (redacted) on a daemon thread; return the thread."""
         handle = self.log_handle
 
+        def write(line):
+            handle.write(self.redact(line.rstrip(b'\r')) + b'\n')
+            handle.flush()
+
         def reader():
+            # Read whatever has arrived (not whole lines), so progress output without newlines
+            # (dots, \r progress bars) still counts as activity for stall detection. Only complete
+            # lines are redacted and written; a very long unterminated line is flushed in pieces.
+            pending = b''
             try:
-                for raw in iter(proc.popen.stdout.readline, b''):
-                    handle.write(self.redact(raw.rstrip(b'\r\n')) + b'\n')
-                    handle.flush()
+                while True:
+                    chunk = proc.popen.stdout.read1(65536)
+                    if not chunk:
+                        break
                     self.last_output = time.time()
+                    pending += chunk
+                    *lines, pending = pending.split(b'\n')
+                    for line in lines:
+                        write(line)
+                    if len(pending) > 1 << 20:
+                        write(pending)
+                        pending = b''
             except (OSError, ValueError):
                 pass  # the job ended while a background child still held the pipe
+            if pending:
+                write(pending)
         thread = threading.Thread(target=reader, daemon=True)
         thread.start()
         return thread

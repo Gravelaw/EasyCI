@@ -340,6 +340,27 @@ jobs:
         code, data = self.wait(self.start(repo, '--no-report')['run_id'])
         self.assertEqual((code, data['state']), (0, 'passed'), data)
 
+    def test_multiline_secret_lines_are_masked(self):
+        workflow = 'on: push\njobs:\n  ml:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo "$MY_PASSWORD"\n'
+        repo = self.make_repo(workflow, {'easyci.yml': 'jobs:\n  ml:\n    required_env: [MY_PASSWORD]\n'})
+        os.environ['MY_PASSWORD'] = 'first-line-x91\nsecond-line-y82'
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        rd = self.run_dir(data['run_id'])
+        self.assertIn('***\n***', (rd / 'jobs/ml/log.txt').read_text())
+        for path in rd.rglob('*'):
+            if path.is_file():
+                for part in (b'first-line-x91', b'second-line-y82'):
+                    self.assertNotIn(part, path.read_bytes(), path)
+
+    def test_output_without_newlines_is_not_a_stall(self):
+        workflow = ('on: push\njobs:\n  dots:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: for i in $(seq 1 40); do printf .; sleep 0.1; done; echo done\n')
+        repo = self.make_repo(workflow, {'easyci.yml': 'jobs:\n  dots:\n    stall_minutes: 0.02\n    stall_action: kill\n'})
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        self.assertIn('.' * 40 + 'done', (self.run_dir(data['run_id']) / 'jobs/dots/log.txt').read_text())
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'
