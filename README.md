@@ -12,6 +12,7 @@ plain sentences.
 - Every command in plain words: [docs/usage.md](docs/usage.md).
 - First time? [Getting started](docs/guide/getting-started.md): ten minutes, no DevOps knowledge needed.
 - New to CI/CD? [The plain-language guide](docs/guide/ci-explained.md).
+- Several PCs or a team? [Team use](docs/guide/team.md).
 
 ## Install
 
