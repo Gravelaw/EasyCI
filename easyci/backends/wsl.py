@@ -138,6 +138,7 @@ class Wsl:
         run = 'bash --noprofile --norc -eo pipefail' if shell == 'bash' else 'sh -e'
         q = shlex.quote
         wrapper.write_bytes((f'echo $$ > {q(to_linux(pgid))}\ncd {q(cwd)} || exit 1\n'
+                             '[ -n "${EASYCI_PATH_PREPEND:-}" ] && export PATH="$EASYCI_PATH_PREPEND:$PATH"\n'
                              f'exec {run} {q(to_linux(script))}\n').encode('utf-8'))
         names = [k for k in env if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)]
         full_env = {**os.environ, **{k: env[k] for k in names}, 'WSLENV': ':'.join(names)}

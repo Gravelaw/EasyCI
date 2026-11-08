@@ -15,6 +15,7 @@ import traceback
 
 from easyci import backends, expr, github, launch, snapshot, store, workflow
 
+PATH_SEP = {True: ':', False: os.pathsep}  # wsl: Linux PATH; native: Windows PATH
 RESULT = {'passed': 'success', 'skipped': 'skipped', 'cancelled': 'cancelled'}
 SECRET_NAME = re.compile(r'TOKEN|SECRET|PASSWORD|KEY', re.I)
 TOKEN_PATTERN = re.compile(rb'\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})')
@@ -487,7 +488,7 @@ class Supervisor:
         for layer in job.get('env_layers') or [job['env']]:  # workflow env first, then job env
             job_env.update(expr.interpolate(layer, {**ctx, 'env': dict(job_env)}))
         ctx['env'] = dict(job_env)
-        extra_env, status, total = {}, 'success', len(job['steps'])
+        extra_env, extra_path, status, total = {}, [], 'success', len(job['steps'])
         jr['steps_total'] = total
         failed = None
         for step in job['steps']:
@@ -514,7 +515,9 @@ class Supervisor:
             self.marker(f'step {index}/{total}: {name}')
             started = time.time()
             ok, result = self.run_step(step, ctx, backend, ws, job, job_dir, join, deadline,
-                                       {**base_env, **job_env, **extra_env}, tmp, index, jr)
+                                       {**base_env, **job_env, **extra_env,
+                                        **({'EASYCI_PATH_PREPEND': PATH_SEP[is_wsl].join(extra_path)} if extra_path else {})},
+                                       tmp, index, jr)
             rec.update(outcome='success' if ok else result.get('outcome', 'failure'), exit_code=result.get('exit_code'),
                        finished_at=store.iso(), elapsed_s=round(time.time() - started, 1))
             code = '' if rec['exit_code'] is None else f' (exit {rec["exit_code"]})'
@@ -522,6 +525,7 @@ class Supervisor:
             ctx['steps'][step.get('id') or f'__{index}'] = {'outputs': result.get('outputs', {}),
                                                              'outcome': rec['outcome']}
             extra_env.update(result.get('env', {}))
+            extra_path[:0] = list(reversed(result.get('path', [])))  # later additions come first, as on GitHub
             jr['steps_done'] = index
             if result.get('outcome') in ('timed_out', 'cancelled', 'stalled'):
                 jr['failed_step'] = {'index': index, 'name': name}
@@ -581,7 +585,8 @@ class Supervisor:
                 self.marker(f'no files found for {paths} (if-no-files-found: error)')
                 return False, {'exit_code': 1}
             return True, {}
-        files = {n: tmp / f'{n.lower()}_{index}' for n in ('GITHUB_OUTPUT', 'GITHUB_ENV', 'GITHUB_STEP_SUMMARY')}
+        files = {n: tmp / f'{n.lower()}_{index}' for n in ('GITHUB_OUTPUT', 'GITHUB_ENV', 'GITHUB_STEP_SUMMARY',
+                                                           'GITHUB_PATH')}
         for path in files.values():
             path.write_bytes(b'')
         env = {**env, **expr.interpolate(step['env'], {**ctx, 'env': env}),
@@ -599,7 +604,8 @@ class Supervisor:
         self.scrub_scripts(job_dir)
         # Values handed to later steps must be the real ones; only persisted copies are masked.
         result = {'exit_code': proc.popen.returncode, 'outputs': parse_kv(self.read(files['GITHUB_OUTPUT'], raw=True)),
-                  'env': parse_kv(self.read(files['GITHUB_ENV'], raw=True))}
+                  'env': parse_kv(self.read(files['GITHUB_ENV'], raw=True)),
+                  'path': [line.strip() for line in self.read(files['GITHUB_PATH'], raw=True).splitlines() if line.strip()]}
         summary = self.read(files['GITHUB_STEP_SUMMARY'])
         if summary:
             with open(job_dir / 'summary.md', 'a', encoding='utf-8') as handle:

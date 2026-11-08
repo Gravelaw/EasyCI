@@ -515,6 +515,49 @@ def cmd_verify(args):
     return data
 
 
+def cmd_setup(args):
+    """Get a repository ready: detect stacks, pick a backend, write a starter workflow and easyci.yml."""
+    from easyci import onboard
+    repo = find_repo(args.repo)
+    result = onboard.plan(repo)
+    if not args.json:
+        for line in onboard.sentences(result):
+            say(args, line)
+    write = args.write or args.commit
+    if result['files'] and not write and not args.json and sys.stdin.isatty():
+        answer = input('Write these files now? [Y/n] ').strip().lower()
+        write = answer in ('', 'y', 'yes')
+    written = onboard.write(repo, result['files']) if write else []
+    for item in result['files']:
+        item['written'] = item['path'] in written
+    result['written'] = written
+    if written and not args.json:
+        say(args, 'Wrote ' + ', '.join(written) + '.')
+    if args.commit and written:
+        try:
+            result['commit'] = onboard.commit(repo, written)
+        except onboard.CommitError as error:
+            raise Fail(3, 'GIT_COMMIT_FAILED', f'The files were written but git could not commit them: {error}',
+                       'Set your git name and email (git config --global user.name "..." and user.email "..."), '
+                       'then run: easyci setup --commit', data=result) from None
+        say(args, f'Committed them as {result["commit"][:7]} ("Add EasyCI checks").')
+    elif written:
+        say(args, 'Next: commit these files (EasyCI tests committed code), then run `easyci run`. '
+                  'Or run `easyci setup --commit` to commit just these files.')
+    if args.desktop:
+        result['launcher'] = onboard.write_launcher(repo, sys.executable)
+        say(args, f'Made a double-click launcher: {result["launcher"]}')
+    if args.run:
+        if written and not args.commit:
+            raise Fail(2, 'UNCOMMITTED_SETUP', 'The new files are not committed yet, so a run would not see them.',
+                       'Run: easyci setup --commit --run', data=result)
+        ns = argparse.Namespace(**{**vars(args), 'commit': None, 'ref': None, 'base': None, 'profile': None,
+                                   'event': None, 'job': None, 'workflow': None, 'backend': None, 'config': None,
+                                   'wait': False, 'no_queue': False, 'no_report': False, 'keep': False})
+        result['run'] = cmd_run(ns)
+    return result
+
+
 def cmd_clean(args):
     default = global_config().get('retention') or 20
     deleted, kept = store.clean(args.keep, default)
@@ -584,6 +627,12 @@ def build_parser():
     p = add('doctor', cmd_doctor, 'Check that this PC (and optionally a repo) is ready.')
     p.add_argument('--repo')
     p.add_argument('--config')
+    p = add('setup', cmd_setup, 'Get a project ready: detect it, pick where tests run, write a starter workflow.')
+    p.add_argument('--repo')
+    p.add_argument('--write', action='store_true', help='write the planned files (never overwrites)')
+    p.add_argument('--commit', action='store_true', help='write and commit only those files')
+    p.add_argument('--desktop', action='store_true', help='put a "Run checks" launcher on the Desktop')
+    p.add_argument('--run', action='store_true', help='start a run afterwards')
     p = add('clean', cmd_clean, 'Delete old run evidence beyond retention.')
     p.add_argument('--keep', type=int)
     return parser
@@ -601,6 +650,9 @@ def emit(args_json, ok, data=None, error=None):
 
 
 def human(data):
+    if isinstance(data, dict) and 'stacks' in data and 'files' in data:  # setup already spoke line by line
+        run = data.get('run') or {}
+        return f'{run["plain"]} (run {run["run_id"]})' if run.get('run_id') else 'Setup check done.'
     if isinstance(data, dict) and 'plain' in data and 'run_id' in data:
         return f'{data["plain"]} (run {data["run_id"]})'
     if isinstance(data, dict) and 'runs' in data:
