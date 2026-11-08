@@ -84,9 +84,27 @@ def desired(run):
     return [(c, s, d if len(d) <= 140 else d[:137] + '...') for c, s, d in out]
 
 
-def post(repo, sha, state, context, description):
-    code, text = gh(['api', '--method', 'POST', f'repos/{repo}/statuses/{sha}', '-f', f'state={state}',
-                     '-f', f'context={context}', '-f', f'description={description}'], timeout=60)
+def dashboard_url():
+    """`dashboard_url` from config.yml in EASYCI_HOME (spec Phase 2 target_url), or None."""
+    from easyci import store
+    path = store.home() / 'config.yml'
+    if not path.exists():
+        return None
+    try:
+        import yaml
+        url = (yaml.safe_load(path.read_text(encoding='utf-8')) or {}).get('dashboard_url')
+    except Exception:  # noqa: BLE001 - a broken config never blocks reporting
+        return None
+    return url.rstrip('/') if isinstance(url, str) and url.startswith(('http://127.0.0.1', 'http://localhost')) else None
+
+
+def post(repo, sha, state, context, description, run_id=None):
+    args = ['api', '--method', 'POST', f'repos/{repo}/statuses/{sha}', '-f', f'state={state}',
+            '-f', f'context={context}', '-f', f'description={description}']
+    base = dashboard_url()
+    if base and run_id:  # the link opens the run on this PC's dashboard
+        args += ['-f', f'target_url={base}/runs/{run_id}']
+    code, text = gh(args, timeout=60)
     return code == 0, None if code == 0 else (text or 'gh failed').strip()[-300:]
 
 
@@ -100,7 +118,7 @@ def sync(rd, run, force=False):
     for context, state, description in desired(run):
         if not force and posted.get(context) == state and context not in info.get('failed', []):
             continue
-        ok, error = post(info['repo'], run['commit'], state, context, description)
+        ok, error = post(info['repo'], run['commit'], state, context, description, run.get('run_id'))
         attempts.append({'at': store.iso(), 'context': context, 'state': state, 'ok': ok, 'error': error})
         if ok:
             posted[context] = state

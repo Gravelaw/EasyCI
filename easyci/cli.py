@@ -558,6 +558,24 @@ def cmd_setup(args):
     return result
 
 
+def cmd_dashboard(args):
+    from easyci import dashboard
+
+    def ready(url, server, token):
+        say(args, f'EasyCI dashboard: {url}  (only this PC can open it; press Ctrl+C to stop)')
+        if args.open:
+            import webbrowser
+            webbrowser.open(url)
+    try:
+        dashboard.serve(args.port, ready)
+    except OSError as error:
+        raise Fail(3, 'PORT_IN_USE', f'Cannot listen on 127.0.0.1:{args.port}: {error}',
+                   'Pick another port with --port, or close the program using it.') from None
+    except KeyboardInterrupt:
+        pass
+    return None
+
+
 def cmd_clean(args):
     default = global_config().get('retention') or 20
     deleted, kept = store.clean(args.keep, default)
@@ -633,6 +651,9 @@ def build_parser():
     p.add_argument('--commit', action='store_true', help='write and commit only those files')
     p.add_argument('--desktop', action='store_true', help='put a "Run checks" launcher on the Desktop')
     p.add_argument('--run', action='store_true', help='start a run afterwards')
+    p = add('dashboard', cmd_dashboard, 'Open a page on this PC that shows runs and can start or cancel them.')
+    p.add_argument('--port', type=int, default=8765)
+    p.add_argument('--open', action='store_true', help='open it in the browser')
     p = add('clean', cmd_clean, 'Delete old run evidence beyond retention.')
     p.add_argument('--keep', type=int)
     return parser
