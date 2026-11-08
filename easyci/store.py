@@ -311,6 +311,7 @@ def mark_interrupted(rd):
         request = read_json(rd / 'request.json') or {}
         if not request.get('options', {}).get('keep'):
             make_writable_and_remove(rd / 'workspace')
+            remove_backend_workspaces(rd, run)
         log(f'reaped {rd.name}: supervisor pid {beat.get("pid")} gone')
     finally:
         guard.rmdir()
@@ -382,20 +383,36 @@ def verify(rd):
     return mismatches
 
 
-def clean(keep):
-    deleted = []
+def remove_backend_workspaces(rd, run):
+    """Remove workspaces kept outside the run directory (WSL jobs work inside the distro, under
+    ~/.easyci/work/<run-id>). Best effort: an unavailable distro is logged, never fatal."""
+    from easyci import backends
+    for backend_id in sorted({j.get('backend') for j in run.get('jobs', []) if str(j.get('backend', '')).startswith('wsl')}):
+        try:
+            backends.get(backend_id).cleanup(rd, run.get('run_id') or rd.name)
+        except Exception as error:  # noqa: BLE001
+            log(f'could not remove {backend_id} workspace of {rd.name}: {error}')
+
+
+def clean(keep=None, default=20):
+    """Delete old terminal runs. `keep` (from --keep) overrides everything; otherwise each project
+    keeps its own `retention` from easyci.yml (recorded in project.json), else `default`."""
+    deleted, kept = [], {}
     for project in (home() / 'projects').glob('*') if (home() / 'projects').exists() else []:
+        limit = keep or (read_json(project / 'project.json') or {}).get('retention') or default
+        kept[project.name] = limit
         runs = [(rd, read_json(rd / 'run.json') or {}) for rd in run_dirs(project.name)]
         protected = {}
         for rd, run in runs:  # newest passed run per profile survives
             if run.get('state') == 'passed':
                 protected[run.get('profile') or run.get('event')] = rd.name
-        terminal = [rd for rd, run in runs if run.get('state') in TERMINAL]
-        for rd in terminal[:max(0, len(terminal) - keep)]:
+        terminal = [(rd, run) for rd, run in runs if run.get('state') in TERMINAL]
+        for rd, run in terminal[:max(0, len(terminal) - limit)]:
             if rd.name not in protected.values():
+                remove_backend_workspaces(rd, run)
                 make_writable_and_remove(rd)
                 deleted.append(rd.name)
-    return deleted
+    return deleted, kept
 
 
 def elapsed(run):

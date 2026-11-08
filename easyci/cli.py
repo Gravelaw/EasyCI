@@ -262,7 +262,8 @@ def cmd_run(args):
     rd.mkdir(parents=True)
     store.write_json(pdir / 'project.json', {'repo': str(info['repo']), 'remote': info['repository'],
                                              'default_branch': info['default_branch'],
-                                             'last_import': plan_summary(plan), 'updated_at': store.iso()})
+                                             'last_import': plan_summary(plan), 'updated_at': store.iso(),
+                                             'retention': info['cfg'].get('retention')})
     options = {'no_queue': args.no_queue, 'report': info['report'], 'keep': args.keep, 'wait': args.wait}
     store.write_json(rd / 'request.json', {
         'schema': SCHEMA, 'run_id': run_id, 'repo': str(info['repo']), 'commit': info['commit'], 'base': info['base'],
@@ -512,8 +513,9 @@ def cmd_verify(args):
 
 
 def cmd_clean(args):
-    keep = args.keep or global_config().get('retention') or 20
-    return {'deleted': store.clean(keep), 'kept_per_project': keep}
+    default = global_config().get('retention') or 20
+    deleted, kept = store.clean(args.keep, default)
+    return {'deleted': deleted, 'kept_per_project': kept}
 
 
 # ---- parser and main -----------------------------------------------------------------------

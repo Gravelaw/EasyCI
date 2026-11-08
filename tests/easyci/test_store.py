@@ -70,6 +70,18 @@ class Reaper(EasyCITest):
         self.assertEqual({k: v[0] for k, v in statuses.items()},
                          {'easyci/web': 'error', 'easyci/julia': 'error', 'easyci': 'error'})
 
+    def test_reaper_removes_wsl_workspaces(self):
+        import unittest.mock as mock
+        rd = fabricate('20261101-000099-0099', jobs=[{'name': 'web', 'state': 'running', 'backend': 'wsl:test-distro'}])
+        calls = []
+
+        class FakeBackend:
+            def cleanup(self, rd_, run_id):
+                calls.append(run_id)
+        with mock.patch('easyci.backends.get', lambda backend_id: FakeBackend()):
+            self.assertTrue(store.mark_interrupted(rd))
+        self.assertEqual(calls, [rd.name])
+
     def test_live_or_fresh_runs_are_left_alone(self):
         alive = fabricate('20260101-000000-cccc', pid=os.getpid(), beat_age=100)
         fresh = fabricate('20260101-000000-dddd', pid=None, beat_age=0)
@@ -215,3 +227,30 @@ class Removal(EasyCITest):
                     store.make_writable_and_remove(target)
                 self.assertEqual(used, [keyword])
                 self.assertFalse(target.exists())
+
+
+class Clean(EasyCITest):
+    def runs(self, count, backend='native'):
+        return [fabricate(f'20261101-00000{i}-000{i}', state='failed',
+                          jobs=[{'name': 'web', 'state': 'failed', 'backend': backend}]) for i in range(count)]
+
+    def test_project_retention_is_honoured_unless_keep_overrides(self):
+        rds = self.runs(5)
+        store.write_json(store.project_dir('proj-000000') / 'project.json', {'retention': 3})
+        deleted, kept = store.clean(None, default=1)
+        self.assertEqual((sorted(deleted), kept), (sorted(r.name for r in rds[:2]), {'proj-000000': 3}))
+        deleted, kept = store.clean(1, default=20)  # --keep wins over the project setting
+        self.assertEqual((len(deleted), kept), (2, {'proj-000000': 1}))
+
+    def test_wsl_workspaces_are_removed_with_the_run(self):
+        import unittest.mock as mock
+        rds = self.runs(2, backend='wsl:test-distro')
+        calls = []
+
+        class FakeBackend:
+            def cleanup(self, rd, run_id):
+                calls.append(run_id)
+        with mock.patch('easyci.backends.get', lambda backend_id: calls.append(backend_id) or FakeBackend()):
+            deleted, _ = store.clean(1)
+        self.assertEqual(deleted, [rds[0].name])
+        self.assertEqual(calls, ['wsl:test-distro', rds[0].name])

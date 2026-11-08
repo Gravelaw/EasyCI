@@ -406,6 +406,15 @@ jobs:
         code, data = self.wait(self.start(repo, '--no-report')['run_id'])
         self.assertEqual((code, data['state']), (0, 'passed'), data)
 
+    def test_job_outputs_see_the_last_steps_exports(self):
+        workflow = ('on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    outputs:\n      run_tests: ${{ env.RUN_TESTS }}\n'
+                    '    steps:\n      - run: echo "RUN_TESTS=true" >> "$GITHUB_ENV"\n'
+                    '  b:\n    needs: a\n    if: needs.a.outputs.run_tests == \'true\'\n    runs-on: ubuntu-latest\n'
+                    '    steps:\n      - run: exit 42\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report')['run_id'])
+        jobs = {j['name']: j['state'] for j in data['jobs']}
+        self.assertEqual((code, jobs), (1, {'a': 'passed', 'b': 'failed'}), data)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'

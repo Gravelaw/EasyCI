@@ -448,7 +448,7 @@ class Supervisor:
                 status = 'failure'
                 failed = failed or {'index': index, 'name': name, 'exit_code': rec['exit_code']}
                 jr['failed_step'] = failed
-        ctx.update(status=status)
+        ctx.update(status=status, env={**job_env, **extra_env})  # include the last step's exports
         self.outputs[job['id']] = {k: expr.to_str(expr.interpolate(v, ctx)) for k, v in job['outputs'].items()}
         jr['outputs'] = {k: self.redact(v.encode('utf-8')).decode('utf-8', errors='replace')
                          for k, v in self.outputs[job['id']].items()}
