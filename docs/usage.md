@@ -139,11 +139,22 @@ jobs:
     stall_minutes: 30         # no output this long marks the run "stalled"
     stall_action: mark        # or kill: stop the job as failed (reason stalled)
     command: npm test         # replace every step of the job with this (Git Bash on native)
+    on_kill: ./release.sh     # runs if EasyCI stops the job (cancel, timeout, stall kill); see below
+    on_kill_minutes: 10       # time limit for on_kill
     skip_steps: [3, "Upload coverage"]   # by 1-based index or by name
     evidence: [reports/**]    # copied into the run's evidence after the job
     required_env: [MY_TOKEN]  # host variables passed through (and masked as *** in logs)
     toolchains: {node: ignore}           # do not check this setup-* version
 ```
+
+`on_kill` is for jobs that start things outside EasyCI's own process tree, such as a delegated
+runner that sets up a database or swap file inside WSL. When EasyCI stops a step because of a
+cancel, a timeout or `stall_action: kill`, it kills the step's process tree first and then runs
+`on_kill` in the same workspace with the same environment, plus `EASYCI_KILL_REASON` (`cancelled`,
+`timed_out`, `step_timeout` or `stalled`). That happens before evidence is collected and before
+the workspace is removed. It never runs when a job passes or fails on its own. Its output goes to
+the job log, its exit code is recorded as `on_kill` on the job in `easyci status --json`, and it
+never changes the job's result. Every step also sees `EASYCI_JOB` (the job id).
 
 A worked example for JuliaFlow is in [`examples/juliaflow/easyci.yml`](../examples/juliaflow/easyci.yml).
 

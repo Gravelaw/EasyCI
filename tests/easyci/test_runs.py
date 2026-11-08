@@ -257,6 +257,44 @@ class NativeRuns(EasyCITest):
         self.assertFalse(store.pid_alive(int((rd / 'jobs/slow/pid').read_text().strip())))
         self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
 
+    def test_on_kill_runs_after_cancel_and_stall_kill_but_not_after_a_pass(self):
+        # A delegated runner (JuliaFlow) sets up resources outside EasyCI's process tree; on_kill must
+        # get a chance to release them, in the same workspace, before evidence is collected.
+        hook = ('    on_kill: |\n      echo "reason=$EASYCI_KILL_REASON job=$EASYCI_JOB sha=$EASYCI_SHA" > released.txt\n'
+                '      echo releasing\n    evidence: [released.txt]\n')
+        repo = self.make_repo(sleeper(60), {'easyci.yml': 'jobs:\n  slow:\n' + hook})
+        run = self.start(repo, '--no-report')
+        rd = self.run_dir(run['run_id'])
+        log_path = rd / 'jobs/slow/log.txt'
+        self.until(lambda: log_path.exists() and b'started' in log_path.read_bytes())
+        code, doc, _ = self.call('cancel', run['run_id'])
+        self.assertEqual(doc['data']['state'], 'cancelled')
+        code, data = self.wait(run['run_id'])
+        released = (rd / 'jobs/slow/artifacts/evidence/released.txt').read_text().strip()
+        self.assertEqual(released, f'reason=cancelled job=slow sha={data["commit"]}')
+        job = store.read_json(rd / 'jobs/slow/job.json')
+        self.assertEqual((job['state'], job['on_kill']['reason'], job['on_kill']['exit_code']),
+                         ('cancelled', 'cancelled', 0))
+        log = log_path.read_text()
+        self.assertLess(log.index('cancelled on request'), log.index('running on_kill cleanup'))
+        self.assertIn('releasing', log)
+        self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
+        self.assertEqual(self.call('verify', run['run_id'])[0], 0)
+        # Stall kill: the hook runs with that reason, and a failing hook does not change the outcome.
+        repo = self.make_repo(sleeper(60), {'easyci.yml': 'jobs:\n  slow:\n    stall_minutes: 0.03\n'
+                                            '    stall_action: kill\n    on_kill: echo "$EASYCI_KILL_REASON"; exit 3\n'},
+                              name='stall')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((data['state'], data['jobs'][0]['reason']), ('failed', 'stalled'))
+        self.assertEqual((data['jobs'][0]['on_kill']['reason'], data['jobs'][0]['on_kill']['exit_code']),
+                         ('stalled', 3))
+        # A passing job never runs it.
+        repo = self.make_repo(sleeper(1), {'easyci.yml': 'jobs:\n  slow:\n' + hook}, name='pass')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'))
+        self.assertNotIn('on_kill', data['jobs'][0])
+        self.assertNotIn('on_kill', (self.run_dir(data['run_id']) / 'jobs/slow/log.txt').read_text())
+
     def test_killed_supervisor_is_reaped(self):
         repo = self.make_repo(sleeper(60), remote='https://github.com/owner/repo.git')
         run = self.start(repo)

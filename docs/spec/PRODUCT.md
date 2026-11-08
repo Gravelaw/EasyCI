@@ -454,7 +454,9 @@ Override keys per job: `skip`, `when: always|workflow`, `backend`, `command` (re
 the job's `uses:` are not evaluated), `timeout_minutes`, `stall_minutes`, `stall_action:
 mark|kill`, `skip_steps: [name or index]`, `evidence: [globs copied into the job's artifacts]`,
 `required_env: [names that must exist on the host and are passed through]`, `toolchains:
-{node: ignore}`. Top-level: `backend`, `report`, `profiles`, `retention`, `gpu: required|optional`.
+{node: ignore}`, `on_kill` (a command run in the job's workspace after EasyCI itself stops a step by cancel,
+timeout or stall kill, so a delegated runner can release resources outside EasyCI's process tree) and
+`on_kill_minutes` (its time limit, default 10). Top-level: `backend`, `report`, `profiles`, `retention`, `gpu: required|optional`.
 
 A delegated `command` on the `native` backend runs inside EasyCI's own clean clone of the exact
 commit (under the run directory on a Windows drive), never in the developer's checkout. That

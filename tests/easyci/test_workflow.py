@@ -126,11 +126,16 @@ class Mapping(unittest.TestCase):
         self.assertEqual([s['kind'] for s in job['steps']], ['toolchain', 'skipped', 'skipped'])
         self.assertEqual(job['toolchains'], [])
         self.assertEqual((job['backend'], job['stall_action'], job['stall_minutes']), ('native', 'kill', 2))
+        self.assertEqual((job['on_kill'], job['on_kill_minutes']), (None, 10))
+        cfg = workflow.load_config('jobs:\n  j:\n    on_kill: ./release.sh\n    on_kill_minutes: 3\n')
+        job = jobs(self.plan(text, cfg))['j']
+        self.assertEqual((job['on_kill'], job['on_kill_minutes']), ('./release.sh', 3))
         self.assertEqual(jobs(self.plan(text, cfg, backend='fake'))['j']['backend'], 'fake')
 
     def test_config_errors(self):
         for text in ('nope: 1', 'backend: docker', 'jobs: {j: {when: sometimes}}', 'jobs: {j: {timeout_minutes: 0}}',
-                     'jobs: {j: {required_env: ["bad name"]}}', 'version: 2', ': ['):
+                     'jobs: {j: {required_env: ["bad name"]}}', 'version: 2', ': [', 'jobs: {j: {on_kill: ""}}',
+                     'jobs: {j: {on_kill: [x]}}', 'jobs: {j: {on_kill_minutes: 0}}'):
             with self.subTest(text=text), self.assertRaises(ConfigError):
                 workflow.load_config(text)
         text = 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps: [{run: x}]\n'

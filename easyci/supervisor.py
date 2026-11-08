@@ -288,6 +288,7 @@ class Supervisor:
         self.report()
         self.log_handle = open(job_dir / 'log.txt', 'ab')
         steps_record, outcome = [], None
+        self.kill_reason = self.step_env = None
         self.last_output = time.time()
         deadline = time.time() + float(job['timeout_minutes']) * 60
         ws = backend.workspace(self.rd, self.run_id, jid)
@@ -305,6 +306,8 @@ class Supervisor:
             outcome = outcome or ('failed', f'internal_error:{str(error)[:120]}')
         finally:
             backend.end_job()
+        if self.kill_reason and job.get('on_kill') and self.step_env is not None:
+            self.run_on_kill(job, jr, backend, ws, job_dir)
         try:
             if job['evidence']:
                 copied = backend.collect(ws, job['evidence'], job_dir / 'artifacts' / 'evidence')
@@ -321,6 +324,42 @@ class Supervisor:
         self.end_job(jr, state, reason)
         store.write_json(job_dir / 'job.json', {'name': jid, 'steps': steps_record, **jr})
 
+    def run_on_kill(self, job, jr, backend, ws, job_dir):
+        """After EasyCI stopped a step (cancel, timeout, stall kill), run the job's on_kill command in the
+        same workspace and environment, so a delegated runner can release what it set up outside
+        EasyCI's process tree (for JuliaFlow: the WSL job's PostgreSQL cluster and swap file). It runs
+        before evidence is collected and the workspace is removed, is not itself cancellable, has its
+        own time limit, and never changes the job's state."""
+        reason = self.kill_reason
+        limit_min = float(job.get('on_kill_minutes') or 10)
+        self.marker(f'running on_kill cleanup (job stopped: {reason})')
+        env = {**self.step_env, 'EASYCI_KILL_REASON': reason}
+        started, timed_out, code = time.time(), False, None
+        try:
+            proc = backend.start('bash', job['on_kill'], env, ws, job_dir, 'on_kill')
+            thread = self.stream(proc)
+            while proc.popen.poll() is None and time.time() < started + limit_min * 60:
+                time.sleep(poll_s())
+            if proc.popen.poll() is None:
+                timed_out = True
+                self.marker(f'on_kill exceeded {limit_min:g} minutes; stopping it')
+                backend.kill(proc)
+                try:
+                    proc.popen.wait(timeout=30)
+                except Exception:  # noqa: BLE001
+                    pass
+            thread.join(timeout=10)
+            code = proc.popen.returncode
+        except Exception as error:  # noqa: BLE001 - reported, never fatal
+            self.marker(f'on_kill error: {error}')
+        finally:
+            backend.end_job()
+        elapsed = round(time.time() - started, 1)
+        jr['on_kill'] = {'reason': reason, 'exit_code': code, 'timed_out': timed_out, 'elapsed_s': elapsed}
+        exit_text = '' if code is None else f' (exit {code})'
+        self.marker(f'on_kill {"passed" if code == 0 else "failed"}{exit_text} after {elapsed}s')
+        self.save()
+
     def marker(self, text):
         self.log_handle.write(f'##[easyci] {text}\n'.encode())
         self.log_handle.flush()
@@ -332,7 +371,7 @@ class Supervisor:
         gh = self.plan['github']
         runner_os = 'Linux' if is_wsl else 'Windows'
         tmp = job_dir / 'tmp'
-        base_env = {'CI': 'true', 'EASYCI': '1', 'EASYCI_RUN_ID': self.run_id, 'EASYCI_SHA': self.run['commit'],
+        base_env = {'CI': 'true', 'EASYCI': '1', 'EASYCI_RUN_ID': self.run_id, 'EASYCI_JOB': job['id'], 'EASYCI_SHA': self.run['commit'],
                     'EASYCI_BASE': self.run['base'], 'EASYCI_EVENT': self.run['event'],
                     'EASYCI_PROFILE': self.run.get('profile') or '', 'GITHUB_SHA': gh['sha'], 'GITHUB_REF': gh['ref'],
                     'GITHUB_REF_NAME': gh['ref_name'], 'GITHUB_REPOSITORY': gh['repository'],
@@ -424,6 +463,7 @@ class Supervisor:
         script = expr.interpolate(step['run'], {**ctx, 'env': env})
         cwd = join(ws, step['working_directory']) if step.get('working_directory') else ws
         step_deadline = time.time() + float(step['timeout_minutes']) * 60 if step.get('timeout_minutes') else None
+        self.step_env = env
         proc = backend.start(step['shell'], script, env, cwd, job_dir, index)
         self.beat['child'] = proc.info
         outcome = self.watch(proc, backend, job, jr, deadline, step_deadline)
@@ -447,8 +487,8 @@ class Supervisor:
         except OSError:
             return ''
 
-    def watch(self, proc, backend, job, jr, deadline, step_deadline):
-        """Stream output; enforce cancel, job timeout, step timeout and stall. Return a kill reason or None."""
+    def stream(self, proc):
+        """Copy a process's output into the job log (redacted) on a daemon thread; return the thread."""
         handle = self.log_handle
 
         def reader():
@@ -461,6 +501,11 @@ class Supervisor:
                 pass  # the job ended while a background child still held the pipe
         thread = threading.Thread(target=reader, daemon=True)
         thread.start()
+        return thread
+
+    def watch(self, proc, backend, job, jr, deadline, step_deadline):
+        """Stream output; enforce cancel, job timeout, step timeout and stall. Return a kill reason or None."""
+        thread = self.stream(proc)
         stall_s = float(job['stall_minutes']) * 60
         reason = None
         while proc.popen.poll() is None or thread.is_alive():
@@ -488,6 +533,7 @@ class Supervisor:
                                  f'job exceeded timeout of {job["timeout_minutes"]} minutes; stopping it',
                                  'step_timeout': 'step exceeded its timeout; stopping it',
                                  'stalled': f'no output for {job["stall_minutes"]} minutes (stall_action: kill)'}[reason])
+                    self.kill_reason = reason
                     backend.kill(proc)
                     try:
                         proc.popen.wait(timeout=30)

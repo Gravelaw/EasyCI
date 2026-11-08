@@ -15,7 +15,7 @@ class ConfigError(Exception):
 
 TOP_KEYS = {'version', 'backend', 'report', 'profiles', 'jobs', 'retention', 'gpu'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
-            'evidence', 'required_env', 'toolchains'}
+            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes'}
 PROFILE_KEYS = {'event', 'jobs', 'workflow'}
 WORKFLOW_IGNORED = {'name', 'on', True, 'env', 'defaults', 'permissions', 'concurrency', 'jobs', 'run-name'}
 JOB_IGNORED = {'permissions', 'concurrency'}
@@ -81,11 +81,12 @@ def load_config(text, source='easyci.yml'):
             raise ConfigError(f'{where}.stall_action must be mark or kill')
         if 'backend' in job:
             backend_id(job['backend'], where)
-        for key in ('timeout_minutes', 'stall_minutes'):
+        for key in ('timeout_minutes', 'stall_minutes', 'on_kill_minutes'):
             if key in job:
                 number(job[key], f'{where}.{key}')
-        if 'command' in job and (not isinstance(job['command'], str) or not job['command'].strip()):
-            raise ConfigError(f'{where}.command must be a non-empty string')
+        for key in ('command', 'on_kill'):
+            if key in job and (not isinstance(job[key], str) or not job[key].strip()):
+                raise ConfigError(f'{where}.{key} must be a non-empty string')
         for key in ('evidence', 'required_env', 'skip_steps'):
             if not isinstance(job.get(key, []), list):
                 raise ConfigError(f'{where}.{key} must be a list')
@@ -263,7 +264,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
            'stall_minutes': jcfg.get('stall_minutes', 20), 'stall_action': jcfg.get('stall_action', 'mark'),
            'env': {**{k: expr.to_str(v) for k, v in (wf.get('env') or {}).items()},
                    **{k: expr.to_str(v) for k, v in (job.get('env') or {}).items()}},
-           'command': jcfg.get('command'), 'evidence': list(jcfg.get('evidence', [])),
+           'command': jcfg.get('command'), 'on_kill': jcfg.get('on_kill'),
+           'on_kill_minutes': jcfg.get('on_kill_minutes', 10), 'evidence': list(jcfg.get('evidence', [])),
            'required_env': list(jcfg.get('required_env', [])), 'toolchain_policy': dict(jcfg.get('toolchains', {})),
            'unsupported': reasons, 'notes': notes}
     if isinstance(out['timeout_minutes'], str):
