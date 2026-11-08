@@ -785,6 +785,11 @@ class Supervisor:
         self.beat.update(phase='finished', job=None, step=None, child=None)
         self.save()
         self.report()
+        if self.plan.get('pr_comment'):
+            try:
+                github.post_comment(self.rd, self.run)
+            except Exception as error:  # noqa: BLE001 - a comment never fails a run
+                self.log(f'{self.run_id}: PR comment error {error}')
         store.write_report(self.rd, self.run)
         if not self.request['options'].get('keep'):
             for backend in self.backends.values():

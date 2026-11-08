@@ -558,6 +558,30 @@ def cmd_setup(args):
     return result
 
 
+def cmd_watch(args):
+    from easyci import watch
+    repo = find_repo(args.repo)
+    options = {'profile': args.profile, 'config': args.config, 'all_authors': args.all_authors,
+               'no_report': args.no_report}
+    if args.once:
+        items = watch.cycle(repo, **options)
+        if not args.json:
+            for item in items:
+                say(args, watch.sentence(item))
+            if not items:
+                say(args, 'No new pull request commits.')
+            return None
+        return {'started': [i for i in items if i.get('run_id')], 'skipped': [i for i in items if i.get('skipped')]}
+    if args.json:
+        raise Fail(2, 'USAGE', 'watch keeps running; use --once with --json.', 'Add --once.')
+    say(args, f'Watching pull requests of {repo} every {max(args.interval, 1):g} minutes. Press Ctrl+C to stop.')
+    try:
+        watch.loop(repo, args.interval, lambda text: say(args, text), **options)
+    except KeyboardInterrupt:
+        pass
+    return None
+
+
 def cmd_mcp(args):
     from easyci import mcp
     mcp.serve()
@@ -658,6 +682,14 @@ def build_parser():
     p.add_argument('--desktop', action='store_true', help='put a "Run checks" launcher on the Desktop')
     p.add_argument('--run', action='store_true', help='start a run afterwards')
     add('mcp', cmd_mcp, 'Serve the EasyCI tools to an AI agent over MCP (stdio).')
+    p = add('watch', cmd_watch, 'Queue a run for every new commit on your open pull requests.')
+    p.add_argument('--repo')
+    p.add_argument('--interval', type=float, default=5, help='minutes between checks (at least 1)')
+    p.add_argument('--once', action='store_true', help='check one time and exit (for Task Scheduler)')
+    p.add_argument('--profile')
+    p.add_argument('--config')
+    p.add_argument('--all-authors', action='store_true', help="also run other people's (non-fork) pull requests")
+    p.add_argument('--no-report', action='store_true')
     p = add('dashboard', cmd_dashboard, 'Open a page on this PC that shows runs and can start or cancel them.')
     p.add_argument('--port', type=int, default=8765)
     p.add_argument('--open', action='store_true', help='open it in the browser')
