@@ -399,7 +399,8 @@ class Supervisor:
                 rec['outcome'] = 'skipped'
                 jr['steps_done'] = index
                 continue
-            name = expr.interpolate(step['name'], ctx)
+            name = self.redact(expr.to_str(expr.interpolate(step['name'], ctx)).encode('utf-8')).decode(
+                'utf-8', errors='replace')
             rec['name'] = name
             self.beat.update(step=index)
             jr.update(current_step=index, current_step_name=name)
@@ -463,7 +464,9 @@ class Supervisor:
         env = {**env, **expr.interpolate(step['env'], {**ctx, 'env': env}),
                **{n: backend.to_backend_path(p) for n, p in files.items()}}
         script = expr.interpolate(step['run'], {**ctx, 'env': env})
-        cwd = join(ws, step['working_directory']) if step.get('working_directory') else ws
+        workdir = expr.to_str(expr.interpolate(step['working_directory'], {**ctx, 'env': env})) \
+            if step.get('working_directory') else ''
+        cwd = join(ws, workdir) if workdir else ws
         step_deadline = time.time() + float(step['timeout_minutes']) * 60 if step.get('timeout_minutes') else None
         self.step_env = env
         proc = backend.start(step['shell'], script, env, cwd, job_dir, index)

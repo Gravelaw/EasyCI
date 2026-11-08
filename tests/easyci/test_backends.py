@@ -41,6 +41,22 @@ class FakeWsl(EasyCITest):
         self.assertTrue(calls[0].startswith('kill -TERM -- -777'))
         self.assertTrue(calls[1].startswith('kill -0 -- -777'))
 
+    def test_end_job_ends_every_step_group_of_the_job(self):
+        # A service started with `&` in step 1 must not survive the job (review finding).
+        b, job_dir = self.backend(), self.tmp / 'jobs' / 'j'
+        with mock.patch('subprocess.Popen') as popen:
+            popen.return_value.pid = 1
+            for index in (1, 2):
+                b.start('bash', 'true\n', {}, '/w', job_dir, index)
+        for index, pgid in ((1, '701'), (2, '702')):
+            (job_dir / 'steps' / f'{index}.pgid').write_text(pgid + '\n')
+        calls = []
+        with mock.patch.object(wsl, 'wsl_run', side_effect=lambda d, s, timeout=0: calls.append(s) or (1, '')):
+            b.end_job()
+            b.end_job()  # idempotent: the groups are forgotten once ended
+        self.assertEqual([c.split(' 2>')[0] for c in calls if c.startswith('kill -TERM')],
+                         ['kill -TERM -- -701', 'kill -TERM -- -702'])
+
     def test_paths_and_distro_listing(self):
         self.assertEqual(wsl.to_linux(pathlib.Path(r'C:\Users\a b\EasyCI\x.bundle')), '/mnt/c/Users/a b/EasyCI/x.bundle')
         sample = ('  NAME                     STATE           VERSION\n* ubn                      Stopped         2\n'

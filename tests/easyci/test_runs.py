@@ -311,7 +311,8 @@ jobs:
         run: |
           echo "NEXT=$MY_TOKEN" >> "$GITHUB_ENV"
           echo "out=$MY_TOKEN" >> "$GITHUB_OUTPUT"
-      - run: |
+      - name: Check ${{ env.NEXT }}
+        run: |
           test "$NEXT" = "$MY_TOKEN"
           test "${{ env.NEXT }}" = "$MY_TOKEN"
           test "${{ steps.s1.outputs.out }}" = "$MY_TOKEN"
@@ -323,11 +324,21 @@ jobs:
         self.assertEqual((code, data['state']), (0, 'passed'), data)
         rd = self.run_dir(data['run_id'])
         self.assertIn('checked ***', (rd / 'jobs/sec/log.txt').read_text())
+        self.assertEqual(data['jobs'][0]['steps_done'], 2)
+        self.assertEqual(store.read_json(rd / 'jobs/sec/job.json')['steps'][1]['name'], 'Check ***')
         self.assertIn('***', (rd / 'jobs/sec/steps/2.sh').read_text())
         for path in rd.rglob('*'):
             if path.is_file():
                 self.assertNotIn(b'tok-Qv27-unique-value', path.read_bytes(), path)
         self.assertEqual(self.call('verify', data['run_id'])[0], 0)
+
+    def test_working_directory_expression_is_resolved(self):
+        workflow = ('on: push\njobs:\n  wd:\n    runs-on: ubuntu-latest\n    env: {SUBDIR: sub}\n    steps:\n'
+                    '      - uses: actions/checkout@v4\n'
+                    '      - working-directory: ${{ env.SUBDIR }}\n        run: test -f data.txt\n')
+        repo = self.make_repo(workflow, {'sub/data.txt': 'x\n'})
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
 
     def test_killed_supervisor_is_reaped(self):
         repo = self.make_repo(sleeper(60), remote='https://github.com/owner/repo.git')

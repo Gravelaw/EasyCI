@@ -141,6 +141,7 @@ class Wsl:
         popen = subprocess.Popen([wsl_exe(), '-d', self.distro, '--exec', 'setsid', '--wait', 'bash', to_linux(wrapper)],
                                  env=full_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, creationflags=NO_WINDOW, close_fds=True)
+        self.groups = [*getattr(self, 'groups', []), str(pgid)]
         return Proc(popen, {'backend': self.id, 'distro': self.distro, 'pid': popen.pid, 'pgid_file': str(pgid)})
 
     def kill(self, proc):
@@ -148,7 +149,11 @@ class Wsl:
         kill_tree(proc.popen.pid)
 
     def end_job(self):
-        pass
+        """Like GitHub (and the native Job object), anything a step left running, such as a service
+        started with `&`, ends with the job: every step's process group is signalled."""
+        groups, self.groups = getattr(self, 'groups', []), []
+        for pgid_file in groups:
+            kill_group(self.distro, pgid_file)
 
     def unc(self, path):
         return pathlib.Path(rf'\\wsl.localhost\{self.distro}' + path.replace('/', '\\'))
