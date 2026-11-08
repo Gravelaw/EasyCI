@@ -13,7 +13,8 @@ class ConfigError(Exception):
     pass
 
 
-TOP_KEYS = {'version', 'backend', 'report', 'profiles', 'jobs', 'retention', 'gpu'}
+TOP_KEYS = {'version', 'backend', 'report', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths', 'busy_stale_minutes',
+            'busy_wait_minutes'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
             'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes'}
 PROFILE_KEYS = {'event', 'jobs', 'workflow'}
@@ -62,6 +63,12 @@ def load_config(text, source='easyci.yml'):
         raise ConfigError(f'{source}: report must be true or false')
     if cfg.get('gpu', 'optional') not in ('required', 'optional'):
         raise ConfigError(f'{source}: gpu must be required or optional')
+    if not isinstance(cfg.get('busy_paths', []), list) or not all(isinstance(p, str) and p.strip()
+                                                                  for p in cfg.get('busy_paths', [])):
+        raise ConfigError(f'{source}: busy_paths must be a list of glob strings')
+    for key in ('busy_stale_minutes', 'busy_wait_minutes'):
+        if key in cfg:
+            number(cfg[key], f'{source}: {key}')
     if 'retention' in cfg and (type(cfg['retention']) is not int or cfg['retention'] < 1):
         raise ConfigError(f'{source}: retention must be a positive integer')
     for name, prof in (cfg.get('profiles') or {}).items():
@@ -148,7 +155,13 @@ def applies(doc, path, inp):
     if filter_match(filt.get('branches-ignore'), branch):
         return False, f'branch {branch} in branches-ignore'
     if 'paths' in filt or 'paths-ignore' in filt:
-        notes.append('paths filters are not evaluated; workflow included')
+        changed = inp.get('changed')
+        if changed is None:
+            notes.append('paths filters not evaluated (no base to compare with); workflow included')
+        elif 'paths' in filt and not any(filter_match(filt['paths'], f) for f in changed):
+            return False, 'no changed file matches the paths filter'
+        elif 'paths-ignore' in filt and changed and all(filter_match(filt['paths-ignore'], f) for f in changed):
+            return False, 'every changed file is in paths-ignore'
     return True, '; '.join(notes) or f'triggered by {event}'
 
 

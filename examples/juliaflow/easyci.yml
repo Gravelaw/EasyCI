@@ -8,6 +8,9 @@
 version: 1
 backend: native
 report: true
+# Wait while someone runs JuliaFlow's own runner by hand on the same checkout: its summary says
+# `status: running` and its folder keeps changing. A crashed run's stale summary does not block.
+busy_paths: [artifacts/local-ci/*/summary.json]
 profiles:
   pr:   {event: pull_request, jobs: [web, julia, debian-release-gate]}
   push: {event: push,         jobs: [web, julia]}

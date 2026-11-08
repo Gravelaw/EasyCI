@@ -61,6 +61,10 @@ python scripts/check-static.py           # legacy Jenkins scaffold policy checks
 Real WSL and `gh` checks are opt-in: set `EASYCI_INTEGRATION=1` (and `EASYCI_TEST_DISTRO` for WSL
 runs).
 
+Tests that start real runs (each with its own temporary `EASYCI_HOME`) are spread over worker
+processes, so the suite finishes in well under a minute. `EASYCI_TEST_WORKERS=N` sets the number of
+workers and `EASYCI_TEST_SERIAL=1` runs everything in one process.
+
 ## Legacy: Jenkins scaffold (frozen)
 
 The Jenkins scaffold below is **frozen legacy** (spec section 4): it is kept for reference with its

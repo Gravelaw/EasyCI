@@ -194,11 +194,14 @@ def plan_inputs(args, require_report=False):
     repository = github.parse_remote(snapshot.origin_url(repo))
     inp = {'event': event, 'ref_name': ref_name, 'default_branch': default, 'commit': commit, 'base': base,
            'repository': repository or '', 'profile': args.profile, 'jobs': args.job, 'workflow': args.workflow,
-           'backend': args.backend, 'default_backend': gcfg.get('backend')}
+           'backend': args.backend, 'default_backend': gcfg.get('backend'),
+           'changed': snapshot.changed_files(repo, base, commit) if base and base != commit else None}
     try:
         plan = workflow.build_plan(files, cfg, inp)
     except workflow.ConfigError as error:
         raise Fail(2, 'CONFIG_INVALID', str(error), 'Fix the workflow or easyci.yml and try again.') from None
+    plan['busy'] = {'paths': list(cfg.get('busy_paths', [])), 'stale_minutes': cfg.get('busy_stale_minutes', 15),
+                    'wait_minutes': cfg.get('busy_wait_minutes', 120)}
     tree = snapshot.list_tree(repo, commit)
     repro = {'commit': commit, 'base': base, 'workflows': {w['file']: w['sha256'] for w in plan['workflows']},
              'easyci_yml': cfg_info, 'lockfiles': workflow.lockfile_hashes(tree, lambda p: snapshot.show(repo, commit, p))}

@@ -149,6 +149,13 @@ class Sentences(EasyCITest):
         run.update(extra)
         return run
 
+    def test_metrics_and_busy_wait_sentences(self):
+        run = self.run_obj('passed')
+        run['jobs'][0]['metrics'] = {'accuracy': 0.934, 'train_time_s': 1812}
+        self.assertTrue(explain.plain(run).endswith(' Metrics: accuracy 0.934, train_time_s 1812.'))
+        waiting = explain.plain(self.run_obj('preparing', waiting_for='artifacts/local-ci/x/summary.json'))
+        self.assertTrue(waiting.startswith('Waiting for another test run on this project to finish'), waiting)
+
     def test_every_state_has_one_plain_line(self):
         self.assertEqual(explain.plain(self.run_obj('running')),
                          'Your tests are running: julia (job 2 of 3), step 2 of 2, 12 minutes so far.')
@@ -272,3 +279,18 @@ class Clean(EasyCITest):
             deleted, _ = store.clean(1)
         self.assertEqual(deleted, [rds[0].name])
         self.assertEqual(calls, ['wsl:test-distro', rds[0].name])
+
+
+class BusyFiles(EasyCITest):
+    def test_only_fresh_running_summaries_are_busy(self):
+        import json as json_
+        repo = self.tmp / 'proj'
+        fresh, stale, done = (repo / 'artifacts' / name / 'summary.json' for name in ('fresh', 'stale', 'done'))
+        for path, status in ((fresh, 'running'), (stale, 'running'), (done, 'passed')):
+            path.parent.mkdir(parents=True)
+            path.write_text(json_.dumps({'status': status}))
+        old = time.time() - 3600
+        os.utime(stale, (old, old))
+        self.assertEqual(store.busy_file(repo, ['artifacts/*/summary.json'], 600), 'artifacts/fresh/summary.json')
+        fresh.write_text(json_.dumps({'status': 'passed'}))
+        self.assertIsNone(store.busy_file(repo, ['artifacts/*/summary.json'], 600))

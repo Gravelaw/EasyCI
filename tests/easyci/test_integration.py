@@ -5,6 +5,7 @@ GitHub status unless EASYCI_TEST_GH_REPO names a repository you own (owner/repo)
 """
 import json
 import os
+import time
 import unittest
 
 from ecsupport import EasyCITest
@@ -33,6 +34,33 @@ class RealHost(EasyCITest):
         for name in ('python', 'git', 'gh', 'wsl'):
             self.assertTrue(checks[name]['ok'], checks[name])
         self.assertIn(checks['docker']['detail'], ('docker: absent (optional)', 'docker: found (not needed)'))
+
+    def test_run_survives_a_session_that_kills_its_job(self):  # criterion 3, the agent-session case
+        # Reproduce how an agent harness ends: the launcher runs inside a Job object that forbids
+        # breakaway and kills every process in it when its handle closes. EasyCI must detect that,
+        # launch through Task Scheduler, and the run must finish after the job is gone.
+        import subprocess
+        import sys
+        from easyci.backends import NO_WINDOW, WinJob
+        repo = self.make_repo(stub('sleep 25; echo done'))
+        job = WinJob()
+        launcher = subprocess.Popen([sys.executable, '-m', 'easyci', 'run', '--repo', str(repo), '--backend', 'native',
+                                     '--no-report', '--json'], cwd=str(self.tmp), env=dict(os.environ),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                    creationflags=NO_WINDOW | 0x4)  # CREATE_SUSPENDED until it is in the job
+        self.assertTrue(job.adopt(launcher))
+        out, err = launcher.communicate(timeout=120)
+        run = json.loads(out)['data']
+        self.assertEqual(run['launch'], 'schtasks', err)
+        job.close()  # the session ends: everything still inside its job is killed now
+        time.sleep(5)
+        rd = store.find_run(run['run_id'])
+        beat = store.read_json(rd / 'heartbeat.json') or {}
+        self.assertLess(time.time() - store.parse_iso(beat['at']), 30, beat)
+        code, data = self.wait(run['run_id'], timeout=180)
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        self.assertGreaterEqual(data['jobs'][0]['elapsed_s'], 25, data)
+        self.assertIn('done', (rd / 'jobs/stub/log.txt').read_text(encoding='utf-8'))
 
     def test_schtasks_launch_path(self):  # criterion 3, fallback path
         os.environ['EASYCI_LAUNCH'] = 'schtasks'

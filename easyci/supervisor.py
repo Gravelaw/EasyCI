@@ -216,7 +216,36 @@ class Supervisor:
             self.backends[backend_id] = backends.get(backend_id)
         return self.backends[backend_id]
 
+    def wait_external(self):
+        """Wait while a runner started outside EasyCI is busy on this repository (busy_paths).
+
+        A matching file is busy if it is JSON with `status: running` and something in its folder
+        changed within busy_stale_minutes; old 'running' summaries left by a crash do not block.
+        """
+        busy = self.plan.get('busy') or {}
+        if not busy.get('paths'):
+            return
+        deadline = time.time() + float(busy.get('wait_minutes', 120)) * 60
+        while True:
+            found = store.busy_file(self.request['repo'], busy['paths'], float(busy.get('stale_minutes', 15)) * 60)
+            if not found:
+                if self.run.pop('waiting_for', None):
+                    self.save()
+                return
+            if self.run.get('waiting_for') != found:
+                self.run['waiting_for'] = found
+                self.log(f'{self.run_id}: waiting for another runner ({found})')
+                self.save()
+            if self.cancelled():
+                raise Cancelled
+            if time.time() > deadline:
+                self.run['reason'] = 'busy_timeout'
+                self.cancel_requested = True
+                raise Cancelled
+            time.sleep(max(poll_s(), min(30.0, store.setting('EASYCI_BUSY_POLL_S', 30.0))))
+
     def prepare(self):
+        self.wait_external()
         repo, commit, base = self.request['repo'], self.run['commit'], self.run['base']
         self.beat['step'] = 'snapshot'
         try:

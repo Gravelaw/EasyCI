@@ -388,6 +388,22 @@ def verify(rd):
     return mismatches
 
 
+def busy_file(repo, patterns, stale_s):
+    """Repository-relative path of a busy runner summary matching patterns, or None."""
+    root, now = pathlib.Path(repo), time.time()
+    for pattern in patterns:
+        for path in sorted(root.glob(str(pattern).replace('\\', '/'))):
+            try:
+                if not path.is_file() or json.loads(path.read_text(encoding='utf-8')).get('status') != 'running':
+                    continue
+                newest = max([p.stat().st_mtime for p in path.parent.rglob('*') if p.is_file()] or [0])
+            except (OSError, ValueError, AttributeError):
+                continue
+            if now - newest < stale_s:
+                return path.relative_to(root).as_posix()
+    return None
+
+
 def remove_backend_workspaces(rd, run):
     """Remove workspaces kept outside the run directory (WSL jobs work inside the distro, under
     ~/.easyci/work/<run-id>). Best effort: an unavailable distro is logged, never fatal."""

@@ -78,6 +78,12 @@ def merge_base(repo, commit, branch):
     return commit
 
 
+def changed_files(repo, base, commit):
+    """Paths changed between base and commit (for workflow `paths:` filters), or None."""
+    out = git(['diff', '--name-only', '--no-renames', base, commit], repo, check=False)
+    return None if out is None else [line for line in out.splitlines() if line]
+
+
 def show(repo, commit, path):
     """File bytes at a commit, or None."""
     return git(['show', f'{commit}:{path}'], repo, check=False, binary=True)

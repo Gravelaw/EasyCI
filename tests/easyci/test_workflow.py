@@ -74,6 +74,25 @@ class Mapping(unittest.TestCase):
     def plan(self, text, cfg=None, **inp):
         return workflow.build_plan(single(text), cfg or {}, {**INP, **inp})
 
+    def test_paths_filters_use_the_changed_files(self):
+        text = ('on:\n  push:\n    paths: ["src/**", "!src/docs/**"]\njobs:\n  t:\n    runs-on: ubuntu-latest\n'
+                '    steps: [{run: x}]\n')
+        run = lambda changed: len(self.plan(text, event='push', ref_name='main', changed=changed)['jobs'])  # noqa: E731
+        self.assertEqual(run(['src/app.py']), 1)
+        self.assertEqual(run(['README.md']), 0)
+        self.assertEqual(run(['src/docs/guide.md']), 0)  # excluded again by the ordered `!` pattern
+        self.assertEqual(run(None), 1)  # nothing to compare with: included, with a note
+        ignore = text.replace('paths: ["src/**", "!src/docs/**"]', 'paths-ignore: ["**.md"]')
+        plan = lambda changed: self.plan(ignore, event='push', ref_name='main', changed=changed)['jobs']  # noqa: E731
+        self.assertEqual(plan(['a.md', 'docs/b.md']), [])
+        self.assertEqual(len(plan(['a.md', 'src/x.py'])), 1)
+
+    def test_busy_settings_are_validated(self):
+        workflow.load_config('busy_paths: [artifacts/*/summary.json]\nbusy_stale_minutes: 5\nbusy_wait_minutes: 30\n')
+        for text in ('busy_paths: x', 'busy_paths: [""]', 'busy_stale_minutes: 0', 'busy_wait_minutes: -1'):
+            with self.subTest(text=text), self.assertRaises(ConfigError):
+                workflow.load_config(text)
+
     def test_unknown_action_marks_job_unsupported_with_its_name(self):
         plan = self.plan('on: push\njobs:\n  img:\n    runs-on: ubuntu-latest\n    steps:\n'
                          '      - uses: docker/build-push-action@v5\n      - run: echo never\n', event='push', ref_name='main')

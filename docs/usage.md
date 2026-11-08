@@ -128,6 +128,9 @@ backend: wsl:my-distro        # where ubuntu-* jobs run (native, wsl, wsl:<distr
 report: true                  # post GitHub commit statuses
 retention: 20                 # runs kept per project by `easyci clean`
 gpu: optional                 # or required: nvidia-smi must exist on the backend
+busy_paths: [artifacts/local-ci/*/summary.json]  # wait while another runner is busy on this repo
+busy_stale_minutes: 15        # a 'running' summary whose folder is older than this does not block
+busy_wait_minutes: 120        # give up (run cancelled, reason busy_timeout) after this long
 profiles:
   pr:   {event: pull_request, jobs: [web, julia]}
 jobs:
@@ -155,6 +158,14 @@ cancel, a timeout or `stall_action: kill`, it kills the step's process tree firs
 the workspace is removed. It never runs when a job passes or fails on its own. Its output goes to
 the job log, its exit code is recorded as `on_kill` on the job in `easyci status --json`, and it
 never changes the job's result. Every step also sees `EASYCI_JOB` (the job id).
+
+`busy_paths` is for projects that also have a runner of their own. A matching file counts as busy
+when it is JSON with `"status": "running"` and something in its folder changed within
+`busy_stale_minutes`; the run then waits in `preparing` and `easyci status` says what it waits for.
+
+Workflow `paths:` and `paths-ignore:` filters are evaluated against the files changed between the
+base and the tested commit (with ordered `!` patterns, as on GitHub). When there is nothing to
+compare with (base equals the commit), the workflow is included and the plan says so.
 
 A worked example for JuliaFlow is in [`examples/juliaflow/easyci.yml`](../examples/juliaflow/easyci.yml).
 
