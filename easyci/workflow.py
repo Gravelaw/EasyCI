@@ -104,6 +104,20 @@ def glob_match(pattern, value):
     return re.fullmatch(regex, value) is not None
 
 
+def filter_match(patterns, value):
+    """GitHub filter semantics: patterns apply in order and a `!pattern` that matches excludes the
+    value again, so `['**', '!release/**']` matches everything except release branches."""
+    matched = False
+    for pattern in patterns or []:
+        pattern = str(pattern)
+        if pattern.startswith('!'):
+            if glob_match(pattern[1:], value):
+                matched = False
+        elif glob_match(pattern, value):
+            matched = True
+    return matched
+
+
 def triggers(doc):
     on = doc.get('on', doc.get(True))
     if isinstance(on, str):
@@ -129,9 +143,9 @@ def applies(doc, path, inp):
     branch = inp['ref_name'] if event == 'push' else inp['default_branch']
     if event == 'push' and ('tags' in filt or 'tags-ignore' in filt) and not ('branches' in filt or 'branches-ignore' in filt):
         return False, 'push filter only matches tags'
-    if 'branches' in filt and not any(glob_match(p, branch) for p in filt['branches'] or []):
+    if 'branches' in filt and not filter_match(filt['branches'], branch):
         return False, f'branch {branch} not in branches filter'
-    if any(glob_match(p, branch) for p in filt.get('branches-ignore') or []):
+    if filter_match(filt.get('branches-ignore'), branch):
         return False, f'branch {branch} in branches-ignore'
     if 'paths' in filt or 'paths-ignore' in filt:
         notes.append('paths filters are not evaluated; workflow included')

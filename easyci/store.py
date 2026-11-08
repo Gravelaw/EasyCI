@@ -243,7 +243,9 @@ def busy():
 # ---- reaper ------------------------------------------------------------------------------
 
 def is_orphaned(rd, run):
-    if run.get('state') not in LIVE:
+    """A live run, or a finished run that was never sealed, whose supervisor is gone."""
+    unsealed = run.get('state') in TERMINAL and not (pathlib.Path(rd) / 'sha256.json').exists()
+    if run.get('state') not in LIVE and not unsealed:
         return False
     beat = read_json(rd / 'heartbeat.json') or {}
     pid = beat.get('pid') or run.get('supervisor_pid')
@@ -286,8 +288,9 @@ def mark_interrupted(rd):
         return False
     try:
         run = read_json(rd / 'run.json') or {}
-        if run.get('state') not in LIVE or not is_orphaned(rd, run):
+        if not is_orphaned(rd, run):
             return False
+        finished = run.get('state') in TERMINAL  # died while finishing: keep its verdict, finish the rest
         beat = read_json(rd / 'heartbeat.json') or {}
         from easyci import backends, github, launch
         if beat.get('child'):
@@ -295,11 +298,12 @@ def mark_interrupted(rd):
                 backends.kill_leftover(beat['child'])
             except Exception as error:  # noqa: BLE001 - best effort, recorded
                 log(f'reaper could not kill leftover {beat["child"]}: {error}')
-        run['state'], run['finished_at'] = 'interrupted', iso()
-        run['reason'] = 'supervisor_died'
-        for job in run.get('jobs', []):
-            if job.get('state') in ('pending', 'running'):
-                job['state'], job['reason'] = 'interrupted', 'supervisor_died'
+        if not finished:
+            run['state'], run['finished_at'] = 'interrupted', iso()
+            run['reason'] = 'supervisor_died'
+            for job in run.get('jobs', []):
+                if job.get('state') in ('pending', 'running'):
+                    job['state'], job['reason'] = 'interrupted', 'supervisor_died'
         write_json(rd / 'run.json', run)
         github.sync(rd, run)
         write_json(rd / 'run.json', run)
@@ -312,7 +316,8 @@ def mark_interrupted(rd):
         if not request.get('options', {}).get('keep'):
             make_writable_and_remove(rd / 'workspace')
             remove_backend_workspaces(rd, run)
-        log(f'reaped {rd.name}: supervisor pid {beat.get("pid")} gone')
+        log(f'reaped {rd.name}: supervisor pid {beat.get("pid")} gone'
+            f'{" while finishing; sealed it" if finished else ""}')
     finally:
         guard.rmdir()
     seal(rd)

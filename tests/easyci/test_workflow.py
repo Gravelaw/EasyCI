@@ -112,6 +112,13 @@ class Mapping(unittest.TestCase):
         self.assertEqual([j['id'] for j in self.plan(text, event='push', ref_name='main')['jobs']], ['a', 'b'])
         self.assertEqual(self.plan(text, event='push', ref_name='release/1.0')['jobs'][0]['id'], 'a')
         self.assertEqual(self.plan(text, event='push', ref_name='feature')['jobs'], [])
+        # Ordered `!` exclusions, as on GitHub (review finding).
+        neg = text.replace('[main, "release/**"]', '["**", "!release/**", "release/keep"]')
+        self.assertEqual(self.plan(neg, event='push', ref_name='release/beta')['jobs'], [])
+        self.assertEqual(len(self.plan(neg, event='push', ref_name='feature/x')['jobs']), 2)
+        self.assertEqual(len(self.plan(neg, event='push', ref_name='release/keep')['jobs']), 2)
+        self.assertTrue(workflow.filter_match(['**', '!release/**'], 'main'))
+        self.assertFalse(workflow.filter_match(['**', '!release/**'], 'release/beta'))
         with self.assertRaises(ConfigError):
             self.plan(text.replace('  a:\n    runs-on', '  a:\n    needs: b\n    runs-on'), event='push', ref_name='main')
 

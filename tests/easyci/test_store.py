@@ -70,6 +70,24 @@ class Reaper(EasyCITest):
         self.assertEqual({k: v[0] for k, v in statuses.items()},
                          {'easyci/web': 'error', 'easyci/julia': 'error', 'easyci': 'error'})
 
+    def test_finished_but_unsealed_run_of_a_dead_supervisor_is_sealed(self):
+        # The supervisor saved its verdict, then died before sealing (review finding): the run keeps
+        # its state, gets sealed, releases the machine, and `wait` returns instead of hanging.
+        from easyci import cli
+        dead = subprocess.Popen([sys.executable, '-c', 'pass'])
+        dead.wait()
+        rd = fabricate('20260101-000000-cccc', state='failed', pid=dead.pid,
+                       jobs=[{'name': 'web', 'state': 'failed', 'reason': 'step_failed', 'reported': True}])
+        self.assertTrue(store.try_lock(rd.name, dead.pid))
+        data = cli.wait_for(rd, timeout_s=20)
+        self.assertIsNotNone(data)
+        self.assertEqual(data['state'], 'failed')
+        self.assertEqual(store.read_json(rd / 'run.json')['jobs'][0]['reason'], 'step_failed')
+        self.assertEqual(store.verify(rd), [])
+        self.assertFalse(store.lock_dir().exists())
+        # A sealed finished run is never touched again.
+        self.assertFalse(store.is_orphaned(rd, store.read_json(rd / 'run.json')))
+
     def test_reaper_removes_wsl_workspaces(self):
         import unittest.mock as mock
         rd = fabricate('20261101-000099-0099', jobs=[{'name': 'web', 'state': 'running', 'backend': 'wsl:test-distro'}])

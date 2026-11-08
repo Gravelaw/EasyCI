@@ -134,8 +134,8 @@ def wait_for(rd, timeout_s=None, until_sealed=True):
         run = store.read_json(rd / 'run.json') or {}
         if run.get('state') in store.TERMINAL and (not until_sealed or (rd / 'sha256.json').exists()):
             return view(rd)
-        if run.get('state') in store.LIVE:
-            safe_reap()
+        if run.get('state') in store.LIVE or run.get('state') in store.TERMINAL:
+            safe_reap()  # also finishes a run whose supervisor died before sealing it
         if deadline and time.time() > deadline:
             return None
         time.sleep(store.setting('EASYCI_POLL_S', 0.5) * 2)
