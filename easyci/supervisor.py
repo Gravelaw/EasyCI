@@ -355,6 +355,7 @@ class Supervisor:
         finally:
             backend.end_job()
         elapsed = round(time.time() - started, 1)
+        self.scrub_scripts(job_dir)
         jr['on_kill'] = {'reason': reason, 'exit_code': code, 'timed_out': timed_out, 'elapsed_s': elapsed}
         exit_text = '' if code is None else f' (exit {code})'
         self.marker(f'on_kill {"passed" if code == 0 else "failed"}{exit_text} after {elapsed}s')
@@ -428,7 +429,8 @@ class Supervisor:
                 jr['failed_step'] = failed
         ctx.update(status=status)
         self.outputs[job['id']] = {k: expr.to_str(expr.interpolate(v, ctx)) for k, v in job['outputs'].items()}
-        jr['outputs'] = self.outputs[job['id']]
+        jr['outputs'] = {k: self.redact(v.encode('utf-8')).decode('utf-8', errors='replace')
+                         for k, v in self.outputs[job['id']].items()}
         return ('passed', None) if status == 'success' else ('failed', 'step_failed')
 
     def run_step(self, step, ctx, backend, ws, job, job_dir, join, deadline, env, tmp, index, jr):
@@ -468,8 +470,10 @@ class Supervisor:
         self.beat['child'] = proc.info
         outcome = self.watch(proc, backend, job, jr, deadline, step_deadline)
         self.beat['child'] = None
-        result = {'exit_code': proc.popen.returncode, 'outputs': parse_kv(self.read(files['GITHUB_OUTPUT'])),
-                  'env': parse_kv(self.read(files['GITHUB_ENV']))}
+        self.scrub_scripts(job_dir)
+        # Values handed to later steps must be the real ones; only persisted copies are masked.
+        result = {'exit_code': proc.popen.returncode, 'outputs': parse_kv(self.read(files['GITHUB_OUTPUT'], raw=True)),
+                  'env': parse_kv(self.read(files['GITHUB_ENV'], raw=True))}
         summary = self.read(files['GITHUB_STEP_SUMMARY'])
         if summary:
             with open(job_dir / 'summary.md', 'a', encoding='utf-8') as handle:
@@ -481,11 +485,24 @@ class Supervisor:
             return False, result
         return proc.popen.returncode == 0, result
 
-    def read(self, path):
+    def read(self, path, raw=False):
         try:
-            return self.redact(pathlib.Path(path).read_bytes()).decode('utf-8', errors='replace')
+            data = pathlib.Path(path).read_bytes()
+            return (data if raw else self.redact(data)).decode('utf-8', errors='replace')
         except OSError:
             return ''
+
+    def scrub_scripts(self, job_dir):
+        """Step scripts may contain secret values interpolated from `${{ env.X }}`; the running process
+        needs them, the evidence must not keep them. Mask them once the process has ended."""
+        for path in (pathlib.Path(job_dir) / 'steps').glob('*'):
+            try:
+                data = path.read_bytes()
+                masked = self.redact(data)
+                if masked != data:
+                    path.write_bytes(masked)
+            except OSError as error:
+                store.log(f'{self.run_id}: could not mask {path.name}: {error}')
 
     def stream(self, proc):
         """Copy a process's output into the job log (redacted) on a daemon thread; return the thread."""

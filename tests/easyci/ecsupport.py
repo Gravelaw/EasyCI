@@ -33,7 +33,10 @@ def rmtree(path):
             func(target)
         except OSError:
             pass
-    shutil.rmtree(path, onexc=onexc)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=onexc)
+    else:
+        shutil.rmtree(path, onerror=onexc)
 
 
 class EasyCITest(unittest.TestCase):

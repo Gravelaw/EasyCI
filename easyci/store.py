@@ -10,6 +10,7 @@ import secrets
 import shutil
 import socket
 import stat
+import sys
 import time
 
 from easyci import SCHEMA, VERSION
@@ -128,11 +129,16 @@ def pid_alive(pid, image=None):
 
 
 def make_writable_and_remove(path):
-    def onexc(func, target, _exc):
+    """rmtree that clears read-only bits (git pack files on Windows). Works on Python 3.11, which
+    only has `onerror`; 3.12 added `onexc` and deprecated `onerror`."""
+    def retry(func, target, _exc):
         os.chmod(target, stat.S_IWRITE)
         func(target)
     if pathlib.Path(path).exists():
-        shutil.rmtree(path, onexc=onexc)
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=retry)
+        else:
+            shutil.rmtree(path, onerror=retry)
 
 
 # ---- projects and runs -------------------------------------------------------------------

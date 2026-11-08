@@ -187,3 +187,31 @@ class Redaction(EasyCITest):
     def test_parse_kv_handles_heredoc(self):
         text = 'a=1\nmulti<<EOF\nline1\nline2\nEOF\nb=x=y\n'
         self.assertEqual(supervisor.parse_kv(text), {'a': '1', 'multi': 'line1\nline2', 'b': 'x=y'})
+
+
+class Removal(EasyCITest):
+    def test_remove_uses_the_callback_api_of_this_python(self):
+        # Python 3.11 rmtree has no `onexc`; the helper must fall back to `onerror` there.
+        import shutil
+        import unittest.mock as mock
+        import warnings
+        for version, keyword in (((3, 11, 15), 'onerror'), ((3, 12, 0), 'onexc')):
+            with self.subTest(version=version):
+                target = self.tmp / f'tree-{version[1]}'
+                (target / 'sub').mkdir(parents=True)
+                locked = target / 'sub' / 'pack.idx'
+                locked.write_text('x')
+                os.chmod(locked, stat.S_IREAD)
+                real, used = shutil.rmtree, []
+
+                def spy(path, **kwargs):
+                    used.extend(kwargs)
+                    if version < (3, 12) and 'onexc' in kwargs:
+                        raise TypeError("rmtree() got an unexpected keyword argument 'onexc'")
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore', DeprecationWarning)
+                        return real(path, **kwargs)
+                with mock.patch.object(store.sys, 'version_info', version), mock.patch.object(store.shutil, 'rmtree', spy):
+                    store.make_writable_and_remove(target)
+                self.assertEqual(used, [keyword])
+                self.assertFalse(target.exists())

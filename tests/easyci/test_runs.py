@@ -295,6 +295,40 @@ class NativeRuns(EasyCITest):
         self.assertNotIn('on_kill', data['jobs'][0])
         self.assertNotIn('on_kill', (self.run_dir(data['run_id']) / 'jobs/slow/log.txt').read_text())
 
+    def test_secrets_reach_later_steps_unmasked_but_never_persist(self):
+        # Review findings: a secret forwarded through $GITHUB_ENV / $GITHUB_OUTPUT must arrive intact
+        # (masking is for evidence, not execution), and a secret interpolated into a step script by
+        # ${{ }} must not stay in jobs/<job>/steps/.
+        workflow = """\
+on: push
+jobs:
+  sec:
+    runs-on: ubuntu-latest
+    outputs:
+      tok: ${{ steps.s1.outputs.out }}
+    steps:
+      - id: s1
+        run: |
+          echo "NEXT=$MY_TOKEN" >> "$GITHUB_ENV"
+          echo "out=$MY_TOKEN" >> "$GITHUB_OUTPUT"
+      - run: |
+          test "$NEXT" = "$MY_TOKEN"
+          test "${{ env.NEXT }}" = "$MY_TOKEN"
+          test "${{ steps.s1.outputs.out }}" = "$MY_TOKEN"
+          echo "checked ${{ env.NEXT }}"
+"""
+        repo = self.make_repo(workflow, {'easyci.yml': 'jobs:\n  sec:\n    required_env: [MY_TOKEN]\n'})
+        os.environ['MY_TOKEN'] = 'tok-Qv27-unique-value'
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        rd = self.run_dir(data['run_id'])
+        self.assertIn('checked ***', (rd / 'jobs/sec/log.txt').read_text())
+        self.assertIn('***', (rd / 'jobs/sec/steps/2.sh').read_text())
+        for path in rd.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(b'tok-Qv27-unique-value', path.read_bytes(), path)
+        self.assertEqual(self.call('verify', data['run_id'])[0], 0)
+
     def test_killed_supervisor_is_reaped(self):
         repo = self.make_repo(sleeper(60), remote='https://github.com/owner/repo.git')
         run = self.start(repo)
