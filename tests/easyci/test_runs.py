@@ -415,6 +415,15 @@ jobs:
         jobs = {j['name']: j['state'] for j in data['jobs']}
         self.assertEqual((code, jobs), (1, {'a': 'passed', 'b': 'failed'}), data)
 
+    def test_job_env_can_use_resolved_workflow_env(self):
+        workflow = ('on: push\nenv:\n  EVENT: ${{ github.event_name }}\njobs:\n  ev:\n    runs-on: ubuntu-latest\n'
+                    '    env:\n      RUN_EVENT: ${{ env.EVENT }}\n    steps:\n'
+                    "      - if: env.RUN_EVENT == 'push'\n        run: exit 42\n"
+                    '      - if: false\n        run: exit 43\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--event', 'push', '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (1, 'failed'), data)
+        self.assertEqual(data['jobs'][0]['failed_step']['index'], 1)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'

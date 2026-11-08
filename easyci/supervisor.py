@@ -402,8 +402,11 @@ class Supervisor:
         # required_env values are the lowest layer of the `env` context, so `if:`, names and `with:`
         # see what run-script interpolation sees; workflow/job env and exported values win.
         passed = {name: base_env[name] for name in job['required_env']}
-        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os}, 'steps': {}, 'env': {**passed, **job['env']}}
-        job_env = {**passed, **expr.interpolate(job['env'], ctx)}
+        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os}, 'steps': {}, 'env': dict(passed)}
+        job_env = dict(passed)
+        for layer in job.get('env_layers') or [job['env']]:  # workflow env first, then job env
+            job_env.update(expr.interpolate(layer, {**ctx, 'env': dict(job_env)}))
+        ctx['env'] = dict(job_env)
         extra_env, status, total = {}, 'success', len(job['steps'])
         jr['steps_total'] = total
         failed = None

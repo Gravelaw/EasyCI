@@ -128,7 +128,7 @@ def parse(text):
 
 
 def condition_text(text):
-    text = str(text).strip()
+    text = to_str(text).strip()  # YAML `if: true` arrives as a bool; str() would give 'True'
     match = TEMPLATE.fullmatch(text)
     return match.group(1) if match else text
 

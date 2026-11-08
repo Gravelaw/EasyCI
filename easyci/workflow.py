@@ -264,6 +264,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
            'stall_minutes': jcfg.get('stall_minutes', 20), 'stall_action': jcfg.get('stall_action', 'mark'),
            'env': {**{k: expr.to_str(v) for k, v in (wf.get('env') or {}).items()},
                    **{k: expr.to_str(v) for k, v in (job.get('env') or {}).items()}},
+           # Kept apart so the workflow layer is resolved before job values that reference it.
+           'env_layers': [{k: expr.to_str(v) for k, v in (layer or {}).items()} for layer in (wf.get('env'), job.get('env'))],
            'command': jcfg.get('command'), 'on_kill': jcfg.get('on_kill'),
            'on_kill_minutes': jcfg.get('on_kill_minutes', 10), 'evidence': list(jcfg.get('evidence', [])),
            'required_env': list(jcfg.get('required_env', [])), 'toolchain_policy': dict(jcfg.get('toolchains', {})),

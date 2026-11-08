@@ -24,6 +24,13 @@ class ExpressionSubset(unittest.TestCase):
         self.assertTrue(self.ev("1 == '1'") and self.ev('null == 0') and self.ev('true == 1'))
         self.assertEqual(self.ev('needs.execution-policy.result'), 'success')
 
+    def test_yaml_boolean_conditions(self):
+        # Unquoted `if: true` / `if: false` reach the parser as Python bools (review finding).
+        expr.parse_condition(True)
+        expr.parse_condition(False)
+        self.assertTrue(expr.condition(True, CTX))
+        self.assertFalse(expr.condition(False, CTX))
+
     def test_status_functions_and_implicit_success(self):
         failed = {**CTX, 'status': 'failure'}
         self.assertFalse(expr.condition("env.X == 'yes'", failed))
