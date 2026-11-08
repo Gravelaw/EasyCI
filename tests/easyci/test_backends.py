@@ -65,3 +65,38 @@ class FakeWsl(EasyCITest):
             found = wsl.distros()
         self.assertEqual(found, [{'name': 'ubn', 'state': 'Stopped', 'version': '2', 'default': True},
                                  {'name': 'juliaflow-ci-ubuntu24', 'state': 'Running', 'version': '2', 'default': False}])
+
+
+class Collector(EasyCITest):
+    def tree(self, *files):
+        root = self.tmp / 'ws'
+        for rel in files:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(rel)
+        return root
+
+    def collect(self, root, patterns, layout='artifact'):
+        from easyci.backends import collect
+        dest = self.tmp / f'out-{len(list(self.tmp.glob("out-*")))}'
+        return sorted(collect(root, patterns, dest, layout)), dest
+
+    def test_exclusions_are_applied(self):
+        root = self.tree('dist/app.js', 'dist/private.txt', 'dist/keys/id.pem', 'dist/sub/x.js')
+        got, dest = self.collect(root, ['dist/**', '!dist/private.txt', '!dist/keys'])
+        self.assertEqual(got, ['app.js', 'sub/x.js'])
+        self.assertFalse((dest / 'private.txt').exists())
+        got, _ = self.collect(root, ['dist', '!**/*.js'])
+        self.assertEqual(got, ['keys/id.pem', 'private.txt'])
+
+    def test_same_basenames_in_different_folders_stay_distinct(self):
+        root = self.tree('a/result.json', 'b/result.json', 'a/deep/m.csv')
+        got, dest = self.collect(root, ['a/result.json', 'b/result.json'])
+        self.assertEqual(got, ['a/result.json', 'b/result.json'])
+        self.assertEqual((dest / 'b/result.json').read_text(), 'b/result.json')
+        self.assertEqual(self.collect(root, ['a/result.json'])[0], ['result.json'])  # single file: its own name
+        self.assertEqual(self.collect(root, ['a/deep', 'a/result.json'])[0], ['deep/m.csv', 'result.json'])
+        self.assertEqual(self.collect(root, ['a/deep'], layout='workspace')[0], ['a/deep/m.csv'])
+
+    def test_unsafe_patterns_are_ignored(self):
+        root = self.tree('ok.txt')
+        self.assertEqual(self.collect(root, ['../x', '/etc/passwd', '', 'ok.txt'])[0], ['ok.txt'])

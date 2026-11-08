@@ -4,6 +4,7 @@ Backends never decide pass/fail; the supervisor does.
 """
 import json
 import os
+import posixpath
 import pathlib
 import re
 import shutil
@@ -127,29 +128,78 @@ def kill_leftover(info):
     kill_tree(info.get('pid'))
 
 
-def collect(root, patterns, dest):
-    """Copy files matching workspace-relative globs into dest; return copied relative paths."""
+def _glob_regex(pattern):
+    out, i = '', 0
+    while i < len(pattern):
+        if pattern.startswith('**/', i):
+            out, i = out + '(?:.*/)?', i + 3
+        elif pattern.startswith('**', i):
+            out, i = out + '.*', i + 2
+        elif pattern[i] == '*':
+            out, i = out + '[^/]*', i + 1
+        elif pattern[i] == '?':
+            out, i = out + '[^/]', i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out + r'(?:/.*)?\Z')  # a directory pattern also covers everything beneath it
+
+
+def _static_prefix(pattern):
+    """The part of a pattern before its first wildcard, as GitHub's upload-artifact uses for the root."""
+    parts = pattern.split('/')
+    for index, part in enumerate(parts):
+        if any(c in part for c in '*?['):
+            return '/'.join(parts[:index])
+    return pattern
+
+
+def collect(root, patterns, dest, layout='artifact'):
+    """Copy files matching workspace-relative globs into dest; return copied relative paths.
+
+    `!pattern` entries exclude matching files (and everything under a matching directory).
+    layout='artifact' follows actions/upload-artifact: paths are relative to the least common
+    ancestor of the search paths, so `a/r.json` and `b/r.json` stay distinct. layout='workspace'
+    keeps workspace-relative paths (used for `evidence`). Symlinks and paths outside root are skipped.
+    """
     root, dest, copied = pathlib.Path(root), pathlib.Path(dest), []
     resolved_root = root.resolve()
+    includes, excludes = [], []
     for pattern in patterns:
         pattern = str(pattern).strip().replace('\\', '/')
-        if not pattern or pattern.startswith('!') or pattern.startswith('/') or '..' in pattern.split('/'):
+        negative = pattern.startswith('!')
+        pattern = pattern[1:].strip() if negative else pattern
+        while pattern.startswith('./'):
+            pattern = pattern[2:]
+        if not pattern or pattern.startswith('/') or '..' in pattern.split('/'):
             continue
-        for match in sorted(root.glob(pattern)):
-            files = [match] if match.is_file() else sorted(p for p in match.rglob('*') if p.is_file())
-            base = match.parent if match.is_file() else match
-            if '*' in pattern:
-                base = root
-            for path in files:
+        (excludes if negative else includes).append(pattern.rstrip('/'))
+    excluded = [_glob_regex(p) for p in excludes]
+    found, prefixes = {}, []
+    for pattern in includes:
+        matches = sorted(root.glob(pattern))
+        if not matches:
+            continue
+        prefix = _static_prefix(pattern)
+        if prefix == pattern and (root / pattern).is_file():
+            prefix = posixpath.dirname(pattern)
+        prefixes.append(prefix)
+        for match in matches:
+            for path in ([match] if match.is_file() else sorted(p for p in match.rglob('*') if p.is_file())):
                 if path.is_symlink() or not path.resolve().is_relative_to(resolved_root):
                     continue
-                rel = path.relative_to(base).as_posix()
-                target = dest / rel
-                if target.exists():
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(path, target)
-                copied.append(rel)
+                rel = path.relative_to(root).as_posix()
+                if not any(rx.match(rel) for rx in excluded):
+                    found.setdefault(rel, path)
+    base = ''
+    if layout == 'artifact' and prefixes:
+        base = posixpath.commonpath([p or '.' for p in prefixes])
+        base = '' if base == '.' else base
+    for rel, path in sorted(found.items()):
+        out = posixpath.relpath(rel, base) if base else rel
+        target = dest / out
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        copied.append(out)
     return copied
 
 

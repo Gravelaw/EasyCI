@@ -158,8 +158,8 @@ class Wsl:
     def unc(self, path):
         return pathlib.Path(rf'\\wsl.localhost\{self.distro}' + path.replace('/', '\\'))
 
-    def collect(self, ws, patterns, dest):
-        return collect(self.unc(ws), patterns, dest)
+    def collect(self, ws, patterns, dest, layout='artifact'):
+        return collect(self.unc(ws), patterns, dest, layout)
 
     def metrics(self, ws):
         return find_metrics(self.unc(ws))

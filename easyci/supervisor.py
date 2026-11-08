@@ -310,7 +310,7 @@ class Supervisor:
             self.run_on_kill(job, jr, backend, ws, job_dir)
         try:
             if job['evidence']:
-                copied = backend.collect(ws, job['evidence'], job_dir / 'artifacts' / 'evidence')
+                copied = backend.collect(ws, job['evidence'], job_dir / 'artifacts' / 'evidence', layout='workspace')
                 self.marker(f'evidence: copied {len(copied)} file(s)')
             metrics = backend.metrics(ws) if backend.exists(ws) else None
             if metrics is not None:
@@ -437,7 +437,8 @@ class Supervisor:
     def run_step(self, step, ctx, backend, ws, job, job_dir, join, deadline, env, tmp, index, jr):
         kind = step['kind']
         if kind == 'checkout':
-            target = join(ws, step['path']) if step.get('path') else ws
+            path = expr.to_str(expr.interpolate(step['path'], {**ctx, 'env': env})) if step.get('path') else ''
+            target = join(ws, path) if path else ws
             backend.checkout(target, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
             self.marker(f'checked out {self.run["commit"]} (tree {self.run["tree"]})')
             return True, {}

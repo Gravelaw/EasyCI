@@ -124,8 +124,8 @@ class Native:
             job.terminate()
             job.close()
 
-    def collect(self, ws, patterns, dest):
-        return collect(ws, patterns, dest)
+    def collect(self, ws, patterns, dest, layout='artifact'):
+        return collect(ws, patterns, dest, layout)
 
     def metrics(self, ws):
         return find_metrics(ws)
