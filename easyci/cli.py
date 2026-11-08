@@ -808,8 +808,23 @@ def human(data):
     return json.dumps(data, indent=2)
 
 
+def _tolerate_console_encoding():
+    """Logs and failure excerpts carry whatever the job printed (emoji, box
+    drawing, the Node test runner's info sign). A Windows console using a
+    legacy code page such as cp1252 cannot encode those, and print() would
+    raise. Replace what the console cannot show instead of crashing."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors='replace')
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    _tolerate_console_encoding()
     as_json = '--json' in argv
     real_stdout = sys.stdout
     if as_json:
