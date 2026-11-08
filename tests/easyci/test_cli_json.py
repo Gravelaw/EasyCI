@@ -1,8 +1,11 @@
 """Criterion 15: every command, success and failure, prints exactly one easyci/1 JSON document."""
+import contextlib
+import io
 import json
 import os
 
 from ecsupport import EasyCITest
+from easyci import cli
 
 QUICK = 'on: push\njobs:\n  quick:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hello\n'
 DOCKER = 'on: push\njobs:\n  img:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/build-push-action@v5\n'
@@ -40,6 +43,20 @@ class JsonDiscipline(EasyCITest):
                 self.assertIn('data', doc)
         self.assertEqual(self.expect(0, 'logs', self.run_id)['data']['job'], 'quick')
         self.assertEqual(self.expect(0, 'status', self.run_id)['data']['state'], 'passed')
+
+    def test_json_before_the_command_is_kept(self):
+        # `easyci --json plan` must give the same document as `easyci plan --json` (review finding).
+        self.finished_run()
+        for args in (('plan', '--repo', self.repo), ('explain', self.run_id), ('logs', self.run_id)):
+            with self.subTest(args=args):
+                after = self.expect(0, *args)['data']
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    code = cli.main(['--json', *map(str, args)])
+                self.assertEqual(code, 0)
+                before = json.loads(out.getvalue())['data']
+                self.assertTrue(before)
+                self.assertEqual(before.keys(), after.keys())
 
     def test_failure_documents(self):
         bad = '20990101-000000-ffff'

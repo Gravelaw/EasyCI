@@ -519,9 +519,14 @@ def cmd_clean(args):
 # ---- parser and main -----------------------------------------------------------------------
 
 def build_parser():
+    top = Parser(add_help=False)
+    top.add_argument('--json', action='store_true', help='print one JSON document on stdout')
+    # Accepted after the command too. SUPPRESS keeps the subparser from resetting a `--json` given
+    # before the command (`easyci --json plan`) back to False.
     common = Parser(add_help=False)
-    common.add_argument('--json', action='store_true', help='print one JSON document on stdout')
-    parser = Parser(prog='easyci', description='Local-first CI for your own PC.', parents=[common])
+    common.add_argument('--json', action='store_true', default=argparse.SUPPRESS,
+                        help='print one JSON document on stdout')
+    parser = Parser(prog='easyci', description='Local-first CI for your own PC.', parents=[top])
     parser.add_argument('--version', action='version', version=f'easyci {VERSION}')
     sub = parser.add_subparsers(dest='command', parser_class=Parser)
 
