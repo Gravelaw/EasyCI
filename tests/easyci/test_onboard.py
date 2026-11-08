@@ -110,6 +110,7 @@ class Onboarding(EasyCITest):
         self.assertEqual(self.git(repo, 'log', '-1', '--format=%s'), 'Add EasyCI checks')
         self.assertEqual(pathlib.Path(data['launcher']).parent, launcher_dir)
         self.assertIn('-m easyci run --wait', pathlib.Path(data['launcher']).read_text())
+        self.assertIn('-m easyci dashboard --open', pathlib.Path(data['dashboard_launcher']).read_text())
         code, result = self.wait(data['run']['run_id'], timeout=120)
         self.assertEqual((code, result['state']), (0, 'passed'), result)
         # 4. Run again: nothing left to write, and nothing is overwritten.

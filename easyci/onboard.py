@@ -274,6 +274,15 @@ def write_launcher(repo, python_exe, folder=None):
     return str(target)
 
 
+def write_dashboard_launcher(python_exe, folder=None):
+    """A double-click `EasyCI dashboard.cmd` that opens the dashboard in the browser."""
+    target = pathlib.Path(folder or desktop_dir()) / 'EasyCI dashboard.cmd'
+    target.write_text('@echo off\r\ntitle EasyCI dashboard\r\n'
+                      f'"{python_exe}" -m easyci dashboard --open\r\n'
+                      'pause\r\n', encoding='utf-8')
+    return str(target)
+
+
 def sentences(result):
     """Plain-English lines for a person (spec section 7)."""
     out = []

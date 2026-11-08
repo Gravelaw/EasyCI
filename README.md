@@ -10,6 +10,7 @@ plain sentences.
 
 - What and why: [product spec](docs/spec/PRODUCT.md) (section 14 is the MVP scope).
 - Every command in plain words: [docs/usage.md](docs/usage.md).
+- First time? [Getting started](docs/guide/getting-started.md): ten minutes, no DevOps knowledge needed.
 - New to CI/CD? [The plain-language guide](docs/guide/ci-explained.md).
 
 ## Install
@@ -29,11 +30,17 @@ in (`gh auth login`). WSL is needed only for `wsl:` backends. Without installing
 ```powershell
 cd D:\my-project
 easyci doctor        # is this PC ready? every problem comes with "Fix: ..."
+easyci setup         # detects the project, picks where tests run, offers a starter workflow
 easyci plan          # what would run, and anything EasyCI cannot run (nothing is executed)
 easyci run           # starts in the background; you can close the window
 easyci status        # "Your tests are running: web (job 1 of 2), step 3 of 8, 4 minutes so far."
 easyci explain       # after a failure: which step, its last lines, and what to try
+easyci dashboard     # a page on this PC: runs, live logs, a "Run checks" button
+easyci watch         # run every new commit of your own open pull requests
 ```
+
+`easyci setup --commit --desktop` also puts "Run checks" and "EasyCI dashboard" launchers on the
+Desktop, so day-to-day use needs no terminal.
 
 ## Quickstart for agents
 
@@ -42,6 +49,8 @@ easyci run --repo D:\my-project --json          # returns at once: data.run_id, 
 easyci wait <run-id> --json                       # exit 0 passed, 1 failed, 4 unsupported, 6 incomplete
 easyci explain <run-id> --json                    # data.summary is safe to quote to the owner
 ```
+
+Agents that speak MCP can use the same commands as tools: `claude mcp add easyci -- python -m easyci mcp`.
 
 Every `--json` document is `{"schema": "easyci/1", "ok": ..., "data" | "error": ...}` and is
 the only thing on stdout; errors carry `code`, `message` and `fix`. The run keeps going after the

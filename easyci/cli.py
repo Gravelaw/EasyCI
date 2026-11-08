@@ -546,7 +546,8 @@ def cmd_setup(args):
                   'Or run `easyci setup --commit` to commit just these files.')
     if args.desktop:
         result['launcher'] = onboard.write_launcher(repo, sys.executable)
-        say(args, f'Made a double-click launcher: {result["launcher"]}')
+        result['dashboard_launcher'] = onboard.write_dashboard_launcher(sys.executable)
+        say(args, f'Made double-click launchers: {result["launcher"]} and {result["dashboard_launcher"]}')
     if args.run:
         if written and not args.commit:
             raise Fail(2, 'UNCOMMITTED_SETUP', 'The new files are not committed yet, so a run would not see them.',
