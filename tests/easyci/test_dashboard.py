@@ -73,3 +73,18 @@ class Dashboard(EasyCITest):
         # A page on another site that resolves its own name to 127.0.0.1 (DNS rebinding) is turned away.
         self.assertEqual(self.request('GET', '/api/runs', host='evil.example:80')[0], 403)
         self.assertEqual(self.request('POST', '/api/run', {'repo': 'x'}, host='evil.example')[0], 403)
+
+    def test_refusals_read_the_body_first(self):
+        # Refusing without reading the body made Windows reset the connection now and then,
+        # so the client saw an abort instead of the 403. Repeat with a sizeable body.
+        body = {'repo': 'x' * 30000}
+        for _ in range(40):
+            self.assertEqual(self.request('POST', '/api/run', body, host='evil.example')[0], 403)
+            self.assertEqual(self.request('POST', '/api/run', body, token='wrong')[0], 403)
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=30)
+        conn.putrequest('POST', '/api/run', skip_host=True)
+        conn.putheader('Host', f'127.0.0.1:{self.port}')
+        conn.putheader('Content-Length', str(dashboard.MAX_BODY + 1))
+        conn.endheaders()
+        self.assertEqual(conn.getresponse().status, 413)
+        conn.close()
