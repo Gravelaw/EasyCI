@@ -42,6 +42,14 @@ def ignore_console_signals():
         ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
 
 
+def inside_workspace(path):
+    """True for a relative path that cannot climb out of the workspace (no drive, root or `..`)."""
+    norm = str(path).replace('\\', '/')
+    if not norm.strip() or norm.startswith('/') or re.match(r'[A-Za-z]:', norm):
+        return False
+    return '..' not in norm.split('/')
+
+
 def parse_kv(text):
     out, lines, i = {}, text.splitlines(), 0
     while i < len(lines):
@@ -93,7 +101,7 @@ class Supervisor:
             try:
                 self.write_beat()
             except OSError as error:
-                store.log(f'{self.run_id}: heartbeat write failed: {error}')
+                self.log(f'{self.run_id}: heartbeat write failed: {error}')
 
     def job_rec(self, jid):
         return next(j for j in self.run['jobs'] if j['name'] == jid)
@@ -115,8 +123,14 @@ class Supervisor:
         try:
             github.sync(self.rd, self.run)
         except Exception as error:  # noqa: BLE001 - reporting never fails a run
-            store.log(f'{self.run_id}: reporting error {error}')
+            self.log(f'{self.run_id}: reporting error {error}')
         self.save()
+
+    def mask(self, text):
+        return self.redact(str(text).encode('utf-8')).decode('utf-8', errors='replace')
+
+    def log(self, text):
+        store.log(self.mask(text))
 
     def redact(self, data):
         # Whole values first, then (like GitHub) each line of a multiline secret such as a private
@@ -304,9 +318,9 @@ class Supervisor:
                 backend.mkdirs(ws)
             outcome = self.run_steps(job, jr, backend, ws, job_dir, needs, deadline, steps_record)
         except Exception as error:  # noqa: BLE001 - becomes a job failure with a reason
-            store.log(f'{self.run_id}: job {jid} error {traceback.format_exc()}')
+            self.log(f'{self.run_id}: job {jid} error {traceback.format_exc()}')
             self.marker(f'EasyCI error: {error}')
-            outcome = outcome or ('failed', f'internal_error:{str(error)[:120]}')
+            outcome = outcome or ('failed', f'internal_error:{self.mask(error)[:120]}')
         finally:
             backend.end_job()
         if self.kill_reason and job.get('on_kill') and self.step_env is not None:
@@ -365,7 +379,7 @@ class Supervisor:
         self.save()
 
     def marker(self, text):
-        self.log_handle.write(f'##[easyci] {text}\n'.encode())
+        self.log_handle.write(self.redact(f'##[easyci] {text}\n'.encode('utf-8')))
         self.log_handle.flush()
         self.last_output = time.time()
 
@@ -385,8 +399,11 @@ class Supervisor:
             base_env[name] = os.environ[name]
             if SECRET_NAME.search(name) and os.environ[name]:
                 self.secrets.append(os.environ[name].encode())
-        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os}, 'steps': {}, 'env': dict(job['env'])}
-        job_env = expr.interpolate(job['env'], ctx)
+        # required_env values are the lowest layer of the `env` context, so `if:`, names and `with:`
+        # see what run-script interpolation sees; workflow/job env and exported values win.
+        passed = {name: base_env[name] for name in job['required_env']}
+        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os}, 'steps': {}, 'env': {**passed, **job['env']}}
+        job_env = {**passed, **expr.interpolate(job['env'], ctx)}
         extra_env, status, total = {}, 'success', len(job['steps'])
         jr['steps_total'] = total
         failed = None
@@ -394,7 +411,7 @@ class Supervisor:
             index = step['index']
             rec = {'index': index, 'name': step['name'], 'kind': step['kind'], 'started_at': store.iso()}
             record.append(rec)
-            ctx.update(status=status, env={**job_env, **extra_env})
+            ctx.update(status=status, env={**job_env, **extra_env})  # job_env already holds `passed`
             if self.cancelled():
                 rec['outcome'] = 'cancelled'
                 return 'cancelled', 'cancelled'
@@ -441,6 +458,11 @@ class Supervisor:
         kind = step['kind']
         if kind == 'checkout':
             path = expr.to_str(expr.interpolate(step['path'], {**ctx, 'env': env})) if step.get('path') else ''
+            if path and not inside_workspace(path):
+                # checkout replaces its destination, so a path outside the workspace could delete
+                # unrelated folders (even the developer's checkout). Refuse it.
+                self.marker(f'checkout path {path!r} must be a relative path inside the workspace; refusing it')
+                return False, {'exit_code': 1}
             target = join(ws, path) if path else ws
             backend.checkout(target, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
             self.marker(f'checked out {self.run["commit"]} (tree {self.run["tree"]})')
@@ -509,7 +531,7 @@ class Supervisor:
                 if masked != data:
                     path.write_bytes(masked)
             except OSError as error:
-                store.log(f'{self.run_id}: could not mask {path.name}: {error}')
+                self.log(f'{self.run_id}: could not mask {path.name}: {error}')
 
     def stream(self, proc):
         """Copy a process's output into the job log (redacted) on a daemon thread; return the thread."""
@@ -564,7 +586,7 @@ class Supervisor:
                     jr['stalled'] = self.run['stalled'] = True
                     jr['stalled_since'] = store.iso(self.last_output)
                     self.save()
-                    store.log(f'{self.run_id}: job {job["id"]} stalled ({int(silent)} s silent)')
+                    self.log(f'{self.run_id}: job {job["id"]} stalled ({int(silent)} s silent)')
                     if job['stall_action'] == 'kill':
                         reason = 'stalled'
                 elif silent < stall_s and jr.get('stalled'):
@@ -623,7 +645,7 @@ class Supervisor:
                 try:
                     backend.cleanup(self.rd, self.run_id)
                 except Exception as error:  # noqa: BLE001
-                    store.log(f'{self.run_id}: cleanup failed {error}')
+                    self.log(f'{self.run_id}: cleanup failed {error}')
         if self.locked:
             store.release_lock(self.run_id)
         store.remove_ticket(self.run_id)
@@ -640,7 +662,7 @@ class Supervisor:
             except (AttributeError, OSError, ValueError):
                 pass
         store.seal(self.rd)
-        store.log(f'{self.run_id}: finished {state}')
+        self.log(f'{self.run_id}: finished {state}')
 
 
 def main(argv):
@@ -653,11 +675,11 @@ def main(argv):
     try:
         sup.execute()
     except Exception as error:  # noqa: BLE001 - last resort: never leave the run live
-        store.log(f'{sup.run_id}: supervisor crash {traceback.format_exc()}')
+        sup.log(f'{sup.run_id}: supervisor crash {traceback.format_exc()}')
         try:
-            sup.finalize(crashed=str(error)[:200])
+            sup.finalize(crashed=sup.mask(error)[:200])
         except Exception:  # noqa: BLE001
-            store.log(f'{sup.run_id}: finalize after crash failed {traceback.format_exc()}')
+            sup.log(f'{sup.run_id}: finalize after crash failed {traceback.format_exc()}')
             if sup.locked:
                 store.release_lock(sup.run_id)
     return 0

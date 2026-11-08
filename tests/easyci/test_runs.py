@@ -361,6 +361,51 @@ jobs:
         self.assertEqual((code, data['state']), (0, 'passed'), data)
         self.assertIn('.' * 40 + 'done', (self.run_dir(data['run_id']) / 'jobs/dots/log.txt').read_text())
 
+    def test_checkout_outside_the_workspace_is_refused(self):
+        outside = self.tmp / 'precious'
+        outside.mkdir()
+        (outside / 'keep.txt').write_text('mine')
+        for number, path in enumerate((outside.as_posix(), '../precious', 'sub/../../x')):
+            with self.subTest(path=path):
+                workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    steps:\n'
+                            f'      - uses: actions/checkout@v4\n        with: {{path: "{path}"}}\n')
+                repo = self.make_repo(workflow, name=f'co{number}')
+                code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+                self.assertEqual((code, data['state']), (1, 'failed'), data)
+                self.assertEqual((outside / 'keep.txt').read_text(), 'mine')
+                log = (self.run_dir(data['run_id']) / 'jobs/co/log.txt').read_text()
+                self.assertIn('must be a relative path inside the workspace', log)
+
+    def test_exception_text_is_masked(self):
+        # A secret used as a working directory that does not exist makes the step fail to start;
+        # the error text holds the resolved path and must be masked everywhere it is written.
+        workflow = ('on: push\njobs:\n  ex:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: echo "NEXT=$MY_TOKEN" >> "$GITHUB_ENV"\n'
+                    '      - working-directory: ${{ env.NEXT }}\n        run: echo never\n')
+        repo = self.make_repo(workflow, {'easyci.yml': 'jobs:\n  ex:\n    required_env: [MY_TOKEN]\n'})
+        os.environ['MY_TOKEN'] = 'tok-Wd53-unique-value'
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual(data['state'], 'failed', data)
+        self.assertTrue(data['jobs'][0]['reason'].startswith('internal_error:'), data)
+        rd = self.run_dir(data['run_id'])
+        for path in [*rd.rglob('*'), self.home / 'easyci.log']:
+            if path.is_file():
+                self.assertNotIn(b'tok-Wd53-unique-value', path.read_bytes(), path)
+
+    def test_passed_through_variables_are_in_the_env_context(self):
+        workflow = ('on: push\njobs:\n  pt:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    "      - if: env.RUN_TESTS == 'yes'\n        name: tests ${{ env.RUN_TESTS }}\n        run: exit 42\n")
+        repo = self.make_repo(workflow, {'easyci.yml': 'jobs:\n  pt:\n    required_env: [RUN_TESTS]\n'})
+        os.environ['RUN_TESTS'] = 'yes'
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (1, 'failed'), data)
+        self.assertEqual(data['jobs'][0]['failed_step']['name'], 'tests yes')
+        # Job env still wins over the passed-through value.
+        repo = self.make_repo(workflow.replace('    steps:', '    env: {RUN_TESTS: no}\n    steps:'),
+                              {'easyci.yml': 'jobs:\n  pt:\n    required_env: [RUN_TESTS]\n'}, name='override')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'
