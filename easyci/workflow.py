@@ -16,7 +16,8 @@ class ConfigError(Exception):
 TOP_KEYS = {'version', 'backend', 'report', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths', 'busy_stale_minutes',
             'busy_wait_minutes'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
-            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes'}
+            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes', 'services', 'env'}
+SERVICES = {'postgres'}  # process-based services on the wsl backend (spec Phase 1; containers come in Phase 3)
 PROFILE_KEYS = {'event', 'jobs', 'workflow'}
 WORKFLOW_IGNORED = {'name', 'on', True, 'env', 'defaults', 'permissions', 'concurrency', 'jobs', 'run-name'}
 JOB_IGNORED = {'permissions', 'concurrency'}
@@ -103,6 +104,16 @@ def load_config(text, source='easyci.yml'):
         tools = job.get('toolchains', {})
         if not isinstance(tools, dict) or any(v not in ('ignore', 'verify') for v in tools.values()):
             raise ConfigError(f'{where}.toolchains values must be ignore or verify')
+        services = job.get('services', {})
+        if not isinstance(services, dict) or set(services) - SERVICES or \
+                any(not isinstance(v, (dict, type(None))) for v in services.values()):
+            raise ConfigError(f'{where}.services must map {sorted(SERVICES)} to settings (or {{}})')
+        for name_, settings in services.items():
+            if set(settings or {}) - {'version'}:
+                raise ConfigError(f'{where}.services.{name_} may only set version')
+        env = job.get('env', {})
+        if not isinstance(env, dict) or any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(k)) for k in env):
+            raise ConfigError(f'{where}.env must map variable names to values')
     return cfg
 
 
@@ -400,7 +411,9 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
            'env': {**{k: expr.to_str(v) for k, v in (wf.get('env') or {}).items()},
                    **{k: expr.to_str(v) for k, v in (job.get('env') or {}).items()}},
            # Kept apart so the workflow layer is resolved before job values that reference it.
-           'env_layers': [{k: expr.to_str(v) for k, v in (layer or {}).items()} for layer in (wf.get('env'), job.get('env'))],
+           'env_layers': [{k: expr.to_str(v) for k, v in (layer or {}).items()}
+                          for layer in (wf.get('env'), job.get('env'), jcfg.get('env'))],
+           'services': {k: dict(v or {}) for k, v in (jcfg.get('services') or {}).items()},
            'command': jcfg.get('command'), 'on_kill': jcfg.get('on_kill'),
            'on_kill_minutes': jcfg.get('on_kill_minutes', 10), 'evidence': list(jcfg.get('evidence', [])),
            'required_env': list(jcfg.get('required_env', [])), 'toolchain_policy': dict(jcfg.get('toolchains', {})),
@@ -424,6 +437,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
         reasons.append(str(error))
         backend = backend or 'native'
     out['backend'], out['backend_reason'] = backend, why
+    if out['services'] and not str(backend).startswith('wsl'):
+        reasons.append(f'unsupported_services:{",".join(out["services"])} needs a wsl backend')
     if out['skip']:
         notes.append('skipped by easyci.yml')
         return out

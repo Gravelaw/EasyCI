@@ -239,3 +239,31 @@ jobs:
         plan = self.plan(text, {'profiles': {'p': {'event': 'push', 'jobs': ['t']}}}, profile='p')
         self.assertEqual([j['id'] for j in plan['jobs']], ['t-1', 't-2'])
         self.assertTrue(all(j['reported'] for j in plan['jobs']))
+
+
+class ServicesAndEnv(unittest.TestCase):
+    TEXT = ('on: push\njobs:\n  db:\n    runs-on: ubuntu-latest\n    env: {A: from-job}\n'
+            '    steps: [{run: echo hi}]\n')
+
+    def plan(self, cfg_text, **inp):
+        cfg = workflow.load_config(cfg_text)
+        return workflow.build_plan(single(self.TEXT), cfg, {**INP, 'event': 'push', 'ref_name': 'main', **inp})
+
+    def test_config_validation(self):
+        workflow.load_config('jobs:\n  db:\n    services: {postgres: {}}\n    env: {URL: "${{ env.DATABASE_URL }}"}\n')
+        workflow.load_config('jobs:\n  db:\n    services: {postgres: {version: 16}}\n')
+        for text in ('jobs: {db: {services: {mysql: {}}}}', 'jobs: {db: {services: [postgres]}}',
+                     'jobs: {db: {services: {postgres: {image: x}}}}', 'jobs: {db: {env: {"bad name": 1}}}',
+                     'jobs: {db: {env: [A]}}'):
+            with self.subTest(text=text), self.assertRaises(ConfigError):
+                workflow.load_config(text)
+
+    def test_services_need_wsl_and_env_layers_stack(self):
+        job = self.plan('jobs:\n  db:\n    services: {postgres: {}}\n    env: {A: from-easyci, B: "${{ env.A }}"}\n',
+                        default_backend='wsl:test')['jobs'][0]
+        self.assertEqual(job['predicted'], 'run')
+        self.assertEqual(job['services'], {'postgres': {}})
+        self.assertEqual([layer.get('A') for layer in job['env_layers']], [None, 'from-job', 'from-easyci'])
+        native = self.plan('jobs:\n  db:\n    services: {postgres: {}}\n', backend='native')['jobs'][0]
+        self.assertEqual(native['predicted'], 'unsupported')
+        self.assertEqual(native['predicted_reason'], 'unsupported_services:postgres needs a wsl backend')

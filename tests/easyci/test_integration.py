@@ -118,6 +118,35 @@ class RealWsl(EasyCITest):
         self.assertEqual(doc['data']['state'], 'cancelled')
         self.assertFalse(self.group_alive(store.find_run(run_id)))
 
+    def test_postgres_service_cache_and_env_override(self):  # Phase 1
+        text = ('on: push\njobs:\n  stub:\n    runs-on: ubuntu-latest\n    steps:\n'
+                '      - uses: actions/checkout@v4\n'
+                '      - id: c\n        uses: actions/cache@v4\n        with: {path: .deps, key: "k-${{ hashFiles(\'lock.txt\') }}"}\n'
+                '      - run: |\n'
+                '          psql "$APP_DB" -tAc "select 40 + 2" | grep -x 42\n'
+                '          echo "hit=${{ steps.c.outputs.cache-hit }}"\n'
+                '          [ -f .deps/made ] && echo "cached $(cat .deps/made)" || { mkdir -p .deps; echo once > .deps/made; }\n')
+        cfg = 'jobs:\n  stub:\n    services: {postgres: {}}\n    env: {APP_DB: "${{ env.DATABASE_URL }}"}\n'
+        repo = self.make_repo(text, {'lock.txt': 'v1\n', 'easyci.yml': cfg})
+        logs = []
+        for _ in range(2):
+            run_id = self.start_wsl(repo)
+            code, data = self.wait(run_id, timeout=300)
+            self.assertEqual((code, data['state']), (0, 'passed'), json.dumps(data))
+            rd = store.find_run(run_id)
+            logs.append((rd / 'jobs/stub/log.txt').read_text(encoding='utf-8'))
+            import re
+            for path in rd.rglob('*'):  # the generated database password never reaches the evidence
+                if path.is_file():
+                    self.assertIsNone(re.search(rb'postgresql://easyci:[0-9a-f]{32}@', path.read_bytes()), path)
+        self.assertIn('services ready: postgres', logs[0])
+        self.assertIn('hit=false', logs[0])
+        self.assertIn('hit=true', logs[1])
+        self.assertIn('cached once', logs[1])
+        from easyci.backends import wsl
+        code, _ = wsl.wsl_run(DISTRO, f'ls /var/tmp/easyci/{run_id} 2>/dev/null; pgrep -u postgres -f /var/tmp/easyci/{run_id}/')
+        self.assertNotEqual(code, 0, 'service stopped and its folder removed')
+
     def test_toolchain_verified_in_distro(self):  # criterion 13, wsl half
         wanted = os.environ.get('EASYCI_TEST_NODE_MAJOR', '25')
         text = ('on: push\njobs:\n  stub:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@v4\n'

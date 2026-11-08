@@ -367,6 +367,13 @@ class Supervisor:
         ws = backend.workspace(self.rd, self.run_id, jid)
         try:
             self.marker(f'job {jid} on {job["backend"]} ({self.run.get("platforms", {}).get(job["backend"], "")})')
+            self.service_env = {}
+            if job.get('services'):
+                self.service_env = backend.start_services(job['services'], self.run_id, jid)
+                # The generated password is masked everywhere, including inside DATABASE_URL.
+                self.secrets.append(self.service_env.get('PGPASSWORD', '').encode())
+                self.marker(f'services ready: {", ".join(job["services"])} '
+                            f'(DATABASE_URL on port {self.service_env.get("PGPORT")})')
             if job['command']:
                 self.marker('cloning the run commit into a clean workspace')
                 backend.checkout(ws, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
@@ -379,6 +386,12 @@ class Supervisor:
             outcome = outcome or ('failed', f'internal_error:{self.mask(error)[:120]}')
         finally:
             backend.end_job()
+            if job.get('services'):
+                try:
+                    backend.stop_services(self.run_id, jid)
+                    self.marker('services stopped')
+                except Exception as error:  # noqa: BLE001 - recorded; cleanup also runs at the end of the run
+                    self.marker(f'services stop error: {error}')
         if outcome and outcome[0] == 'passed':
             for store_, cache_ws, paths, key in self.pending_caches:  # actions/cache saves after a passing job
                 try:
@@ -465,6 +478,8 @@ class Supervisor:
         # required_env values are the lowest layer of the `env` context, so `if:`, names and `with:`
         # see what run-script interpolation sees; workflow/job env and exported values win.
         passed = {name: base_env[name] for name in job['required_env']}
+        passed.update(getattr(self, 'service_env', {}) or {})  # DATABASE_URL, PG* from services
+        base_env.update(getattr(self, 'service_env', {}) or {})
         ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os, 'arch': 'X64', 'temp': base_env['RUNNER_TEMP']},
                'steps': {}, 'env': dict(passed), 'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
                'job': {'status': 'success'}, '__hash_files__': lambda patterns: backend.hash_files(ws, patterns)}
