@@ -478,7 +478,9 @@ class Supervisor:
     def run_step(self, step, ctx, backend, ws, job, job_dir, join, deadline, env, tmp, index, jr):
         kind = step['kind']
         if kind == 'checkout':
-            path = expr.to_str(expr.interpolate(step['path'], {**ctx, 'env': env})) if step.get('path') else ''
+            step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
+            path_ctx = {**ctx, 'env': {**env, **step_env}}
+            path = expr.to_str(expr.interpolate(step['path'], path_ctx)) if step.get('path') else ''
             if path and not inside_workspace(path):
                 # checkout replaces its destination, so a path outside the workspace could delete
                 # unrelated folders (even the developer's checkout). Refuse it.

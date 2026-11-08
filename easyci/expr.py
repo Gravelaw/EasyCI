@@ -63,23 +63,27 @@ class Parser:
         return node
 
     def and_(self):
-        node = self.not_()
+        node = self.equality()
         while self.peek() == ('op', '&&'):
             self.take()
-            node = ('and', node, self.not_())
+            node = ('and', node, self.equality())
         return node
 
-    def not_(self):
-        if self.peek() == ('op', '!'):
-            self.take()
-            return ('not', self.not_())
-        node = self.primary()
+    def equality(self):
+        # `!` binds tighter than `==`/`!=`, as in GitHub: `!a == b` is `(!a) == b`.
+        node = self.unary()
         if self.peek() in (('op', '=='), ('op', '!=')):
             op = self.take()[1]
-            node = ('eq' if op == '==' else 'ne', node, self.primary())
+            node = ('eq' if op == '==' else 'ne', node, self.unary())
         if self.peek()[1] in ('<', '>', '<=', '>=', '==', '!='):
             self.fail()
         return node
+
+    def unary(self):
+        if self.peek() == ('op', '!'):
+            self.take()
+            return ('not', self.unary())
+        return self.primary()
 
     def primary(self):
         kind, value = self.take()

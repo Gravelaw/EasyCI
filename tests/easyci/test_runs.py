@@ -462,6 +462,14 @@ jobs:
         log = (self.run_dir(data['run_id']) / 'jobs/tc/log.txt').read_text()
         self.assertIn('toolchain_mismatch:node 26.3.0 != 25', log)
 
+    def test_checkout_path_sees_step_env(self):
+        workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/checkout@v4\n        env: {SOURCE_DIR: source}\n'
+                    '        with: {path: "${{ env.SOURCE_DIR }}"}\n'
+                    '      - run: test -f source/data.txt\n')
+        code, data = self.wait(self.start(self.make_repo(workflow, {'data.txt': 'x\n'}), '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'

@@ -24,6 +24,14 @@ class ExpressionSubset(unittest.TestCase):
         self.assertTrue(self.ev("1 == '1'") and self.ev('null == 0') and self.ev('true == 1'))
         self.assertEqual(self.ev('needs.execution-policy.result'), 'success')
 
+    def test_negation_binds_tighter_than_equality(self):
+        ctx = {**CTX, 'env': {'FLAG': 'nonempty'}}
+        self.assertEqual(expr.parse('!env.FLAG == true')[0], 'eq')
+        self.assertFalse(self.ev('!env.FLAG == true', ctx))   # (!'nonempty') == true -> false == true
+        self.assertTrue(self.ev('!(env.FLAG == true)', ctx))
+        self.assertTrue(self.ev('!env.MISSING', ctx))
+        self.assertTrue(self.ev("!!env.FLAG && env.FLAG != 'x'", ctx))
+
     def test_yaml_boolean_conditions(self):
         # Unquoted `if: true` / `if: false` reach the parser as Python bools (review finding).
         expr.parse_condition(True)
