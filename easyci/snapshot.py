@@ -107,14 +107,19 @@ def make_bundle(repo, commit, base, dest):
         return git(['rev-parse', f'{commit}^{{tree}}'], bare)
 
 
-def clone_bundle(bundle, dest, commit, tree):
-    """Clean clone of the bundle at commit; verifies identity and rejects symlinks and submodules."""
+def clone_bundle(bundle, dest, commit, tree, refs=None):
+    """Clean clone of the bundle at commit; verifies identity and rejects symlinks and submodules.
+
+    `refs` ({ref: sha}) are created after the clone, e.g. refs/remotes/origin/main at the base, so
+    scripts that compare with `origin/<default branch>` work as after a full checkout on GitHub."""
     dest = pathlib.Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     git(['clone', '--quiet', '--no-hardlinks', '--no-checkout', str(bundle), str(dest)], dest.parent)
     git(['checkout', '--quiet', '--detach', commit], dest)
     if git(['rev-parse', 'HEAD'], dest) != commit or git(['rev-parse', 'HEAD^{tree}'], dest) != tree:
         raise GitError('checkout identity mismatch')
+    for ref, sha in (refs or {}).items():
+        git(['update-ref', ref, sha], dest)
     return dest
 
 

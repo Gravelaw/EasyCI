@@ -560,6 +560,22 @@ jobs:
         self.assertEqual((windows_path('/c/tools/bin'), windows_path('/d'), windows_path('rel')),
                          ('C:\\tools\\bin', 'D:\\', 'rel'))
 
+    def test_checkout_has_origin_default_branch_at_the_base(self):
+        workflow = ('on: pull_request\njobs:\n  r:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/checkout@v4\n        with: {fetch-depth: 0}\n'
+                    '      - run: echo "origin-main=$(git rev-parse origin/main)"; git diff --stat origin/main...HEAD\n')
+        repo = self.make_repo(workflow)
+        base = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'checkout', '-q', '-b', 'feature')
+        (pathlib.Path(repo) / 'change.txt').write_text('x\n')
+        self.git(repo, 'add', '-A')
+        self.git(repo, 'commit', '-qm', 'change')
+        code, data = self.wait(self.start(repo, '--no-report', '--base', base, '--event', 'pull_request')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/r/log.txt').read_text()
+        self.assertIn(f'origin-main={base}', log)
+        self.assertIn('change.txt', log)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'

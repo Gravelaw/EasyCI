@@ -113,13 +113,15 @@ class Wsl:
     def workspace(self, rd, run_id, job):
         return f'{self.home()}/.easyci/work/{run_id}/{job}'
 
-    def checkout(self, ws, bundle, commit, tree):
+    def checkout(self, ws, bundle, commit, tree, refs=None):
         q = shlex.quote
+        update = ''.join(f'; git update-ref {q(ref)} {q(sha)}' for ref, sha in (refs or {}).items()
+                         if re.fullmatch(r'refs/[A-Za-z0-9._/-]+', ref) and re.fullmatch(r'[0-9a-f]{40}', sha))
         script = (f'set -e; rm -rf {q(ws)}; mkdir -p "$(dirname {q(ws)})"; '
                   f'export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0; '
                   f'git -c core.hooksPath= -c credential.helper= clone --quiet --no-hardlinks --no-checkout '
                   f'{q(to_linux(bundle))} {q(ws)}; cd {q(ws)}; git -c core.hooksPath= checkout --quiet --detach {commit}; '
-                  f'test "$(git rev-parse HEAD^{{tree}})" = {tree}')
+                  f'test "$(git rev-parse HEAD^{{tree}})" = {tree}{update}')
         code, text = wsl_run(self.distro, script, timeout=1800)
         if code != 0:
             raise RuntimeError(f'clone inside {self.distro} failed: {text[-300:]}')

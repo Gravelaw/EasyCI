@@ -387,7 +387,7 @@ class Supervisor:
                             f'(DATABASE_URL on port {self.service_env.get("PGPORT")})')
             if job['command']:
                 self.marker('cloning the run commit into a clean workspace')
-                backend.checkout(ws, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
+                backend.checkout(ws, self.rd / 'source.bundle', self.run['commit'], self.run['tree'], self.origin_refs())
             else:
                 backend.mkdirs(ws)
             outcome = self.run_steps(job, jr, backend, ws, job_dir, needs, deadline, steps_record)
@@ -567,7 +567,7 @@ class Supervisor:
                 self.marker(f'checkout path {path!r} must be a relative path inside the workspace; refusing it')
                 return False, {'exit_code': 1}
             target = join(ws, path) if path else ws
-            backend.checkout(target, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
+            backend.checkout(target, self.rd / 'source.bundle', self.run['commit'], self.run['tree'], self.origin_refs())
             self.marker(f'checked out {self.run["commit"]} (tree {self.run["tree"]})')
             return True, {}
         if kind == 'toolchain':
@@ -647,6 +647,14 @@ class Supervisor:
                          {'schema': 'easyci/1', 'kind': 'artifact-pointer', 'name': name, 'location': str(target),
                           'size_bytes': size, 'files': hashes})
         self.marker(f'artifact {name} is {size / 2 ** 20:.0f} MB; stored outside the run folder: {target}')
+
+    def origin_refs(self):
+        """refs/remotes/origin/<default branch> at the base commit (which the bundle always holds)."""
+        default = ((self.plan.get('github') or {}).get('event') or {}).get('repository', {}).get('default_branch')
+        base = self.run.get('base')
+        if default and base and re.fullmatch(r'[A-Za-z0-9._/-]+', default):
+            return {f'refs/remotes/origin/{default}': base}
+        return {}
 
     def step_inputs(self, step, ctx, env):
         step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})

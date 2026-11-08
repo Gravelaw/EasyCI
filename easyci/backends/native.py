@@ -93,11 +93,11 @@ class Native:
     def workspace(self, rd, run_id, job):
         return str(pathlib.Path(rd) / 'workspace' / job)
 
-    def checkout(self, ws, bundle, commit, tree):
+    def checkout(self, ws, bundle, commit, tree, refs=None):
         dest = pathlib.Path(ws)
         if dest.exists():
             store.make_writable_and_remove(dest)
-        snapshot.clone_bundle(bundle, dest, commit, tree)
+        snapshot.clone_bundle(bundle, dest, commit, tree, refs)
 
     def mkdirs(self, path):
         pathlib.Path(path).mkdir(parents=True, exist_ok=True)
