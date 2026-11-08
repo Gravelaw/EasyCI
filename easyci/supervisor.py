@@ -361,6 +361,7 @@ class Supervisor:
         self.log_handle = open(job_dir / 'log.txt', 'ab')
         steps_record, outcome = [], None
         self.kill_reason = self.step_env = None
+        self.pending_caches = []
         self.last_output = time.time()
         deadline = time.time() + float(job['timeout_minutes']) * 60
         ws = backend.workspace(self.rd, self.run_id, jid)
@@ -378,7 +379,13 @@ class Supervisor:
             outcome = outcome or ('failed', f'internal_error:{self.mask(error)[:120]}')
         finally:
             backend.end_job()
-        if self.kill_reason and job.get('on_kill') and self.step_env is not None:
+        if outcome and outcome[0] == 'passed':
+            for store_, cache_ws, paths, key in self.pending_caches:  # actions/cache saves after a passing job
+                try:
+                    saved = store_.save(cache_ws, paths, key)
+                    self.marker(f'cache {"saved" if saved else "not saved (key exists or nothing to store)"}: {key}')
+                except Exception as error:  # noqa: BLE001 - a cache failure never fails the job
+                    self.marker(f'cache save failed: {error}')
             self.run_on_kill(job, jr, backend, ws, job_dir)
         try:
             if job['evidence']:
@@ -459,7 +466,7 @@ class Supervisor:
         passed = {name: base_env[name] for name in job['required_env']}
         ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os, 'arch': 'X64', 'temp': base_env['RUNNER_TEMP']},
                'steps': {}, 'env': dict(passed), 'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
-               'job': {'status': 'success'}}
+               'job': {'status': 'success'}, '__hash_files__': lambda patterns: backend.hash_files(ws, patterns)}
         job_env = dict(passed)
         for layer in job.get('env_layers') or [job['env']]:  # workflow env first, then job env
             job_env.update(expr.interpolate(layer, {**ctx, 'env': dict(job_env)}))
@@ -543,8 +550,9 @@ class Supervisor:
             self.marker(f'{step["tool"]} {actual} verified (requested {step["requested"] or "any"})')
             return True, {}
         if kind == 'cache':
-            self.marker('cache step skipped (local)')
-            return True, {}
+            return self.cache_step(step, ctx, backend, ws, env)
+        if kind == 'download-artifact':
+            return self.download_step(step, ctx, backend, ws, env)
         if kind == 'upload-artifact':
             # Inputs see the job env plus this step's own `env:`, as run scripts do.
             step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
@@ -586,6 +594,49 @@ class Supervisor:
             result['outcome'] = outcome
             return False, result
         return proc.popen.returncode == 0, result
+
+    def step_inputs(self, step, ctx, env):
+        step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
+        return expr.interpolate(step.get('with') or {}, {**ctx, 'env': {**ctx['env'], **step_env}})
+
+    def cache_step(self, step, ctx, backend, ws, env):
+        from easyci import cache as cache_mod
+        with_ = self.step_inputs(step, ctx, env)
+        key, paths = with_.get('key', '').strip(), cache_mod.split_lines(with_.get('path'))
+        if not key:
+            self.marker('cache key is empty after evaluation; skipping the cache')
+            return True, {'outputs': {'cache-hit': 'false'}}
+        store_ = backend.cache(self.run['project'])
+        if step['variant'] == 'save':
+            saved = store_.save(ws, paths, key)
+            self.marker(f'cache {"saved" if saved else "not saved (key exists or nothing to store)"}: {key}')
+            return True, {}
+        matched, exact = store_.restore(ws, paths, key, cache_mod.split_lines(with_.get('restore-keys')))
+        self.marker(f'cache {"hit" if exact else "restored from " + matched if matched else "miss"}: {key}')
+        if step['variant'] == 'cache' and not exact:
+            self.pending_caches.append((store_, ws, paths, key))
+        if not matched and str(with_.get('fail-on-cache-miss', 'false')).lower() == 'true':
+            return False, {'exit_code': 1, 'outputs': {'cache-hit': 'false'}}
+        return True, {'outputs': {'cache-hit': 'true' if exact else 'false', 'cache-primary-key': key,
+                                  'cache-matched-key': matched or ''}}
+
+    def download_step(self, step, ctx, backend, ws, env):
+        with_ = self.step_inputs(step, ctx, env)
+        name, path = with_.get('name', '').strip(), with_.get('path', '').strip()
+        if path and not inside_workspace(path):
+            self.marker(f'download path {path!r} must be a relative path inside the workspace; refusing it')
+            return False, {'exit_code': 1}
+        roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
+        chosen = [p for p in roots if p.name == name] if name else roots
+        if name and not chosen:
+            self.marker(f'artifact {name} was not uploaded earlier in this run')
+            return False, {'exit_code': 1}
+        total = 0
+        for artifact in chosen:  # without a name every artifact lands in its own folder, as on GitHub
+            total += backend.copy_in(artifact, ws, path if name else posixpath.join(path, artifact.name) if path
+                                     else artifact.name)
+        self.marker(f'downloaded {len(chosen)} artifact(s), {total} file(s)')
+        return True, {'outputs': {'download-path': path or '.'}}
 
     def read(self, path, raw=False):
         try:

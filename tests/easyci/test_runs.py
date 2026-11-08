@@ -1,6 +1,7 @@
 """Real runs through the detached supervisor and the native backend with tiny stub steps."""
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -505,6 +506,47 @@ jobs:
         code, data = self.wait(self.start(repo, '--no-report', '--backend', 'fake')['run_id'])
         self.assertEqual({j['name']: j['state'] for j in data['jobs']},
                          {'t-1': 'passed', 't-2': 'failed', 't-3': 'passed', 'after': 'passed'})
+
+    def test_cache_restore_save_and_prefix_fallback(self):
+        workflow = ('on: push\njobs:\n  c:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/checkout@v4\n'
+                    '      - id: cache\n        uses: actions/cache@v4\n'
+                    "        with: {path: .deps, key: \"deps-${{ hashFiles('lock.txt') }}\", restore-keys: deps-}\n"
+                    '      - run: |\n          echo "hit=${{ steps.cache.outputs.cache-hit }}"\n'
+                    '          if [ -f .deps/built.txt ]; then echo "found $(cat .deps/built.txt)"; '
+                    'else mkdir -p .deps; echo first > .deps/built.txt; echo built; fi\n')
+        repo = self.make_repo(workflow, {'lock.txt': 'v1\n'})
+        logs = []
+        for change in (None, None, 'v2\n'):
+            if change:
+                (pathlib.Path(repo) / 'lock.txt').write_text(change)
+                self.git(repo, 'commit', '-qam', 'bump lock')
+            code, data = self.wait(self.start(repo, '--no-report', '--backend', 'fake')['run_id'])
+            self.assertEqual((code, data['state']), (0, 'passed'), data)
+            logs.append((self.run_dir(data['run_id']) / 'jobs/c/log.txt').read_text())
+        self.assertIn('hit=false', logs[0])
+        self.assertIn('built', logs[0])
+        self.assertIn('hit=true', logs[1])          # exact key: cache-hit true, contents restored
+        self.assertIn('found first', logs[1])
+        self.assertIn('hit=false', logs[2])         # new key: restored from the deps- prefix
+        self.assertIn('found first', logs[2])
+        self.assertIn('restored from deps-', logs[2])
+        entries = list((self.home / 'cache').rglob('*.tar'))
+        self.assertEqual(len(entries), 2, entries)  # one entry per distinct key
+
+    def test_download_artifact_between_jobs(self):
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p out && echo payload > out/result.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: res, path: out}\n'
+                    '  use:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: res, path: got}\n'
+                    '      - run: test "$(cat got/result.txt)" = payload\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: missing}\n        continue-on-error: true\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/use/log.txt').read_text()
+        self.assertIn('downloaded 1 artifact(s), 1 file(s)', log)
+        self.assertIn('artifact missing was not uploaded earlier in this run', log)
 
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'

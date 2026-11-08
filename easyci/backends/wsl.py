@@ -164,6 +164,18 @@ class Wsl:
     def collect(self, ws, patterns, dest, layout='artifact'):
         return collect(self.unc(ws), patterns, dest, layout)
 
+    def hash_files(self, ws, patterns):
+        from easyci.backends import hash_files
+        return hash_files(self.unc(ws), patterns)
+
+    def copy_in(self, src_dir, ws, rel):
+        from easyci.backends import copy_in
+        return copy_in(src_dir, self.unc(f'{ws}/{rel}' if rel else ws))
+
+    def cache(self, project):
+        from easyci.cache import WslCache
+        return WslCache(self, project)
+
     def metrics(self, ws):
         return find_metrics(self.unc(ws))
 

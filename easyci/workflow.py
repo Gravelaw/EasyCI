@@ -26,7 +26,7 @@ STEP_KEYS = {'name', 'id', 'if', 'run', 'uses', 'with', 'env', 'shell', 'working
 SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python': ('python', 'python-version'),
          'julia-actions/setup-julia': ('julia', 'version'), 'actions/setup-java': ('java', 'java-version'),
          'actions/setup-go': ('go', 'go-version')}
-CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')
+CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')  # local caches since Phase 1
 SHELLS = {'bash', 'sh', 'pwsh', 'powershell', 'cmd'}
 BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?)\Z')
 LOCKFILES = ('package-lock.json', 'Project.toml', 'Manifest.toml', 'uv.lock', 'poetry.lock')
@@ -277,8 +277,23 @@ def plan_step(index, step, ctx):
         if not with_.get('path'):
             raise Unsupported('unsupported_upload_artifact:path missing')
         out.update(kind='upload-artifact', decision='copy files into the run evidence')
-    elif name in CACHE:
-        out.update(kind='cache', decision='cache step skipped (local)')
+    elif name in CACHE and ver[:2] in ('v3', 'v4'):
+        variant = {'actions/cache': 'cache', 'actions/cache/restore': 'restore', 'actions/cache/save': 'save'}[name]
+        paths = [p.strip() for p in str(with_.get('path', '')).splitlines() if p.strip()]
+        if not paths or not with_.get('key'):
+            raise Unsupported(f'unsupported_cache:{name} needs path and key')
+        if any(p.startswith('!') or any(c in p for c in '*?[') for p in paths):
+            raise Unsupported('unsupported_cache:glob or ! paths')
+        if any(k in with_ for k in ('enableCrossOsArchive', 'lookup-only', 'fail-on-cache-miss')) and \
+                str(with_.get('lookup-only', 'false')).lower() == 'true':
+            raise Unsupported('unsupported_cache:lookup-only')
+        out.update(kind='cache', variant=variant,
+                   decision={'cache': 'restore from the local cache; save after the job passes',
+                             'restore': 'restore from the local cache', 'save': 'save into the local cache'}[variant])
+    elif name == 'actions/download-artifact' and ver[:2] in ('v3', 'v4'):
+        if with_.get('pattern') or with_.get('artifact-ids') or with_.get('run-id') or with_.get('github-token'):
+            raise Unsupported('unsupported_download_artifact:only name and path are supported')
+        out.update(kind='download-artifact', decision='copy an artifact uploaded earlier in this run')
     else:
         raise Unsupported(f'unsupported_uses:{uses or "?"}')
     return out
