@@ -418,7 +418,10 @@ class Supervisor:
             if self.cancelled():
                 rec['outcome'] = 'cancelled'
                 return 'cancelled', 'cancelled'
-            if step['kind'] == 'skipped' or not expr.condition(step.get('if'), ctx):
+            # The step's own `env:` is visible to its `if:` (requested by the maintainer on PR #1).
+            step_env = expr.interpolate(step.get('env') or {}, ctx)
+            cond_ctx = {**ctx, 'env': {**ctx['env'], **step_env}} if step_env else ctx
+            if step['kind'] == 'skipped' or not expr.condition(step.get('if'), cond_ctx):
                 rec['outcome'] = 'skipped'
                 jr['steps_done'] = index
                 continue

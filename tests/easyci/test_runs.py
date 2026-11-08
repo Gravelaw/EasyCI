@@ -424,6 +424,12 @@ jobs:
         self.assertEqual((code, data['state']), (1, 'failed'), data)
         self.assertEqual(data['jobs'][0]['failed_step']['index'], 1)
 
+    def test_step_env_is_visible_to_its_own_if(self):
+        workflow = ('on: push\njobs:\n  se:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    "      - env: {DO_TEST: 'yes'}\n        if: env.DO_TEST == 'yes'\n        run: exit 42\n")
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (1, 'failed'), data)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'
