@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  execution-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.policy.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select hosted or local execution
+        id: policy
+        run: node scripts/ci/hosted-policy.mjs
+
+  web:
+    needs: execution-policy
+    if: needs.execution-policy.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+      - run: npm install
+      - run: npm run test:local-ci
+      - run: npm run validate:contracts
+      - run: npm run build
+      - run: npm run test
+      - run: npm run validate:control-doc-sync
+      - run: npm run validate:brd-traceability
+      - run: git diff --check
+
+  julia:
+    needs: execution-policy
+    if: needs.execution-policy.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+      - run: julia --project=. tests/julia/runtests.jl
+
+  debian-release-gate:
+    needs: execution-policy
+    if: needs.execution-policy.outputs.enabled == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # A fresh hosted depot plus the full Docker-backed release suite exceeded
+    # the previous 90-minute job ceiling without an assertion failure.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run verify:release
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-release-verification-${{ github.event.pull_request.head.sha }}
+          path: artifacts/release-verification/latest
+          if-no-files-found: error
+

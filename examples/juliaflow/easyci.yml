@@ -1,0 +1,68 @@
+# EasyCI settings for JuliaFlow (spec section 8.4), kept outside the JuliaFlow repository.
+# Use it with:  easyci run --repo "D:\Julia Project" --profile pr --config examples\juliaflow\easyci.yml
+#
+# JuliaFlow's execution-policy job makes hosted Actions skip everything, so a literal import
+# would honestly skip every job. Here that gate is skipped and each PR job is delegated to
+# JuliaFlow's own proven runner (scripts/ci/wsl.mjs --job <name>), which drives WSL itself,
+# so EasyCI runs it on the Windows host (backend native) inside a clean clone of the commit.
+version: 1
+backend: native
+report: true
+profiles:
+  pr:   {event: pull_request, jobs: [web, julia, debian-release-gate]}
+  push: {event: push,         jobs: [web, julia]}
+jobs:
+  execution-policy:
+    skip: true                          # hosted-only gate; EasyCI decides locally
+  web:
+    when: always                        # ignore the workflow `if:` for this job
+    backend: native
+    timeout_minutes: 360
+    stall_minutes: 30
+    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job web --cache cold
+    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/web/**]
+    # When EasyCI stops a job (cancel, timeout, stall kill) it kills wsl.mjs outright, so wsl.mjs never
+    # reaches its own cleanup and the WSL job keeps its PostgreSQL cluster, 3 GiB swap file and
+    # /ci-run folder. on_kill does what wsl.mjs would have done: kill the WSL process group only if
+    # /proc/<pid>/cmdline proves it is this run's job, then run JuliaFlow's own `wsl-job.sh cleanup`,
+    # which refuses to touch anything whose owner file does not match. The distro name matches the
+    # one wsl.mjs hardcodes. Cleanup files land in the job's evidence folder and are collected.
+    on_kill: &release-wsl-job |
+      found=0
+      for ev in artifacts/local-ci/jfci-*/"$EASYCI_JOB"; do
+        [ -f "$ev/wsl-pid" ] || continue
+        found=1
+        id=$(basename "$(dirname "$ev")")
+        win=$(cd "$(dirname "$ev")" && pwd -W)
+        root="/mnt/$(printf '%s' "${win:0:1}" | tr 'A-Z' 'a-z')${win:2}"
+        echo "releasing JuliaFlow WSL job $id/$EASYCI_JOB ($EASYCI_KILL_REASON)"
+        MSYS_NO_PATHCONV=1 wsl.exe -d juliaflow-ci-ubuntu24 -u root --exec bash -c '
+          pid=$1 root=$2 id=$3 job=$4
+          if cmd=$(tr "\0" "\n" < "/proc/$pid/cmdline" 2>/dev/null) && grep -Fxq "$root/wsl-job.sh" <<<"$cmd" &&
+             grep -Fxq run <<<"$cmd" && grep -Fxq "$id" <<<"$cmd" && grep -Fxq "$job" <<<"$cmd"; then
+            echo "stopping owned WSL process group $pid"
+            kill -TERM -- "-$pid" 2>/dev/null || true; sleep 2; kill -KILL -- "-$pid" 2>/dev/null || true
+          else
+            echo "WSL process $pid is gone or not owned by $id/$job; not killing it"
+          fi
+          tr -d "\r" < "$root/wsl-job.sh" | bash -s -- cleanup "$id" "$job" "$root/$job" && echo "wsl-job.sh cleanup passed"
+        ' _ "$(tr -d '\r\n' < "$ev/wsl-pid")" "$root" "$id" "$EASYCI_JOB"
+      done
+      [ "$found" = 1 ] || echo "no JuliaFlow WSL job had started; nothing to release"
+  julia:
+    when: always
+    backend: native
+    timeout_minutes: 360
+    stall_minutes: 45                   # Pkg.instantiate and precompile are quiet
+    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job julia --cache cold
+    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/julia/**]
+    on_kill: *release-wsl-job
+  debian-release-gate:
+    when: always
+    backend: native
+    timeout_minutes: 180
+    stall_minutes: 45
+    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job debian-release-gate --cache cold
+    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/debian-release-gate/**]
+    on_kill: *release-wsl-job
+    required_env: []

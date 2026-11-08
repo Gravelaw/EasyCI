@@ -1,0 +1,191 @@
+<title>CI/CD for JuliaFlow</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: single reading column (~68ch) with full-width "terminal strip" examples that look like a PR's checks list */
+:root{
+  --bg:#f6f7f4; --surface:#ffffff; --fg:#1d2321; --muted:#5b6662; --line:#d9dfdb;
+  --accent:#2f6b5a; --accent-soft:#e3efe9;
+  --pass:#1f7a3f; --fail:#b3261e; --run:#a86a00;
+  --display:"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body:"Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121614; --surface:#1a1f1d; --fg:#e6ebe8; --muted:#9aa7a2; --line:#2c3431;
+  --accent:#7fc4ad; --accent-soft:#1f2e29; --pass:#5cc47f; --fail:#f2857c; --run:#e3b04f; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#121614; --surface:#1a1f1d; --fg:#e6ebe8; --muted:#9aa7a2; --line:#2c3431;
+  --accent:#7fc4ad; --accent-soft:#1f2e29; --pass:#5cc47f; --fail:#f2857c; --run:#e3b04f; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:17px/1.6 var(--body);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 64px}
+main{max-width:46rem;margin:0 auto;display:grid;gap:56px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;line-height:1.15;margin:0}
+h1{font-size:clamp(2rem,6vw,3.1rem);font-weight:800;letter-spacing:-.02em}
+h2{font-size:1.65rem;font-weight:800;display:flex;gap:.6em;align-items:baseline}
+h2 .n{font-family:var(--mono);font-size:.85rem;color:var(--accent);font-weight:600}
+h3{font-size:1.1rem;font-weight:600}
+p{margin:0}
+section{display:grid;gap:16px}
+.lede{font-size:1.15rem;color:var(--muted)}
+.eyebrow{font:600 .78rem/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+code{font-family:var(--mono);font-size:.88em;background:var(--accent-soft);padding:.05em .35em;border-radius:4px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.95rem;min-width:30rem}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+th{font:600 .78rem/1.3 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+td:first-child{font-weight:700;white-space:nowrap}
+.checks{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.checks header{padding:10px 14px;border-bottom:1px solid var(--line);font:600 .85rem var(--mono);color:var(--muted);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.check{display:grid;grid-template-columns:1.4rem 1fr auto;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-size:.95rem}
+.check:last-child{border-bottom:0}
+.check b{font-family:var(--mono);font-weight:600;font-size:.9rem}
+.check span.d{color:var(--muted);font-size:.85rem;text-align:right}
+.ok{color:var(--pass)} .bad{color:var(--fail)} .wait{color:var(--run)}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch}
+.flow div{flex:1 1 9rem;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px;font-size:.92rem;min-width:0}
+.flow div strong{display:block;font-family:var(--display);font-size:1rem;margin-bottom:4px}
+.flow .arrow{flex:0 0 auto;align-self:center;border:0;background:none;padding:0;color:var(--accent);font-weight:700}
+.cost{display:grid;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px}
+.bar{height:14px;border-radius:7px;background:var(--accent-soft);overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.85rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:var(--c)}
+ol.lessons{margin:0;padding-left:1.3em;display:grid;gap:10px}
+ul{margin:0;padding-left:1.2em;display:grid;gap:8px}
+.note{border-left:3px solid var(--accent);padding:4px 0 4px 14px;color:var(--muted)}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 18px;margin:0;font-size:.95rem}
+dt{font-weight:700} dd{margin:0;color:var(--muted)}
+@media (max-width:520px){dl{grid-template-columns:1fr}dd{margin-bottom:6px}.check{grid-template-columns:1.4rem 1fr}.check span.d{grid-column:2;text-align:left}}
+</style>
+
+<main>
+<header style="display:grid;gap:14px">
+  <p class="eyebrow">EasyCI guide · no DevOps background needed</p>
+  <h1>CI/CD, explained with JuliaFlow</h1>
+  <p class="lede">What DevOps and CI/CD are, why GitHub charges for them, what running checks on your own PC changes, where Jenkins fits, and how this helps data-science work.</p>
+  <div class="checks" aria-label="Example of how a pull request could look with EasyCI">
+    <header><span>Pull request · LowcodeMLtoolkit.jl</span><span>commit 846a025</span></header>
+    <div class="check"><span class="ok">✓</span><b>easyci/web</b><span class="d">Passed on your PC · 14 min</span></div>
+    <div class="check"><span class="ok">✓</span><b>easyci/julia</b><span class="d">Passed on your PC · 41 min</span></div>
+    <div class="check"><span class="wait">●</span><b>easyci/debian-release-gate</b><span class="d">Running: step 3 of 3 · 52 min so far</span></div>
+  </div>
+  <p class="note">An example of the goal: the checks run on your computer, and the pull request on GitHub still shows the result.</p>
+</header>
+
+<section>
+  <h2><span class="n">1</span>What DevOps is</h2>
+  <p>Writing code is half of shipping software. The other half happens around the code: checking that a change didn't break anything, building what users install, recording what was released, and being able to roll back.</p>
+  <p><strong>DevOps</strong> is the name for that second half and for the habit of automating it. "Dev" is development (writing code); "Ops" is operations (building, releasing, running it). The idea is that repetitive steps are done by machines, the same way every time, rather than from memory.</p>
+  <p>In a kitchen, cooking is development. DevOps is the routine around it: tasting before a plate goes out, labelling and dating what goes in the fridge, writing down which recipe version you used so the next batch tastes the same.</p>
+</section>
+
+<section>
+  <h2><span class="n">2</span>What CI/CD is, and why JuliaFlow needs it</h2>
+  <p><strong>CI, Continuous Integration:</strong> every time the code changes, a machine runs the full set of checks and answers pass or fail, within minutes or hours, while you still remember what you changed.</p>
+  <p><strong>CD, Continuous Delivery:</strong> when a version passes and you want to release it, a machine builds the release package the same way every time, records exactly what went in, and stores it safely.</p>
+  <p>One JuliaFlow change can touch three different worlds at once. These are the checks in its <code>.github/workflows/ci.yml</code>:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Check</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>web</td><td>Installs packages, validates the data contracts, builds the web app, runs unit tests, checks documentation and requirement traceability.</td></tr>
+      <tr><td>julia</td><td>Installs the exact Julia packages and runs the Julia test suite, including the 100 Gateway Repository and 221 Worker Service tests, against a real PostgreSQL database.</td></tr>
+      <tr><td>release gate</td><td>Builds the whole product, starts it, and drives five real browser tests with Playwright against the live back end. Allowed up to 180 minutes.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Nobody can do all of that by hand after every edit. Without CI, a change to a web form could quietly break a Julia endpoint and you'd find out weeks later. With CI, the pull request shows a red cross the same day, with the log of the step that failed.</p>
+  <p>For AI coding agents this matters even more. Agents make many changes quickly, and CI is the referee that checks whether a change is actually good instead of trusting the agent's own report.</p>
+</section>
+
+<section>
+  <h2><span class="n">3</span>What GitHub Actions does, and why it costs money</h2>
+  <p><strong>GitHub Actions</strong> is GitHub's built-in CI/CD service. The files in <code>.github/workflows/</code> tell it: "when a pull request opens, start a fresh Linux computer, fetch the code, install Node and Julia, run these commands." GitHub rents you that computer (a <em>runner</em>) for the length of the job, then throws it away. The ticks and crosses on a pull request come from these runs.</p>
+  <p>It costs money because GitHub is lending you real computers. For <strong>private</strong> repositories, which JuliaFlow and EasyCI both are, you get a monthly allowance (about 2,000 minutes on the free plan, 3,000 on Pro) and then pay per minute. Since January 2026 a standard Linux runner costs about <strong>$0.006 a minute</strong>; Windows about $0.010; macOS about $0.062. Public repositories are free.</p>
+  <div class="cost" aria-label="How quickly JuliaFlow uses the free allowance">
+    <h3>One week of JuliaFlow pushes, roughly</h3>
+    <div class="bar"><i style="width:7%;background:var(--accent)"></i><i style="width:22%;background:var(--run)"></i><i style="width:46%;background:var(--fail)"></i></div>
+    <div class="legend">
+      <span style="--c:var(--accent)">web ≈ 15 min</span>
+      <span style="--c:var(--run)">julia ≈ 30–60 min</span>
+      <span style="--c:var(--fail)">release gate ≈ 60–180 min</span>
+    </div>
+    <p>One push uses about 2–4 runner-hours. Ten pushes a week uses up a 2,000-minute allowance in roughly a week.</p>
+  </div>
+  <p>After that the cost is a few dollars a week. But if the spending limit is $0, GitHub simply <strong>stops starting jobs</strong>. That is what happened on a JuliaFlow pull request: the jobs never began, so there was no answer at all.</p>
+  <p>GitHub also lets you connect your own computer as a "self-hosted runner", and those minutes are currently free. GitHub announced a small fee for them in December 2025 and withdrew it after complaints, so that could change again.</p>
+</section>
+
+<section>
+  <h2><span class="n">4</span>How the local approach differs</h2>
+  <p>The local approach runs the same checks on your own PC. Here that means a dedicated Linux environment inside Windows (WSL, the <code>juliaflow-ci-ubuntu24</code> distro) with the right versions of Node, Julia and PostgreSQL installed once.</p>
+  <div class="flow" aria-label="How a local run flows">
+    <div><strong>You push</strong>A branch or pull request on GitHub.</div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div><strong>Your PC runs it</strong>EasyCI runs the workflow's steps in WSL, in the background.</div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div><strong>Evidence saved</strong>Logs, versions and checksums stay on your disk.</div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div><strong>GitHub shows it</strong>A ✓ or ✗ appears on the pull request.</div>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Question</th><th>GitHub runner</th><th>Your PC (EasyCI)</th></tr></thead>
+    <tbody>
+      <tr><td>Cost</td><td>Free allowance, then per minute; nothing runs at a $0 limit</td><td>Free; uses your electricity and computer time</td></tr>
+      <tr><td>Speed</td><td>Fresh machine each time, so installs start from scratch; you may queue</td><td>Can reuse earlier downloads; no queue, but your PC is busy meanwhile</td></tr>
+      <tr><td>Trust</td><td>Neutral machine that reviewers already trust</td><td>Your machine; trust comes from the recorded evidence and honest reporting</td></tr>
+      <tr><td>Evidence</td><td>Logs kept by GitHub for a limited time</td><td>Full logs, versions, checksums and outputs, kept as long as you like</td></tr>
+      <tr><td>Availability</td><td>Always on</td><td>Only while your PC is on and awake</td></tr>
+      <tr><td>Fidelity</td><td>The reference environment</td><td>Close but not identical; a WSL pass doesn't prove Windows or Docker behaviour</td></tr>
+    </tbody>
+  </table></div>
+  <p>JuliaFlow already tried a do-it-yourself version (its <code>scripts/ci/</code> runner). It works, and it taught three lessons that EasyCI is built around:</p>
+  <ol class="lessons">
+    <li><strong>Runs must not die when a window closes.</strong> Several JuliaFlow runs stopped when the terminal or agent session that started them ended, and were left saying "running" forever. EasyCI starts each run as its own background process.</li>
+    <li><strong>Stuck runs must be noticed.</strong> One Julia package install sat silent for over seven minutes until a person stopped it. EasyCI watches for silence and marks a run as stalled.</li>
+    <li><strong>Results must show up where you look.</strong> Local passes were invisible on GitHub, where the pull request just said "skipped". EasyCI posts the result back to the pull request using your existing GitHub login.</li>
+  </ol>
+</section>
+
+<section>
+  <h2><span class="n">5</span>What Jenkins is and does</h2>
+  <p><strong>Jenkins</strong> is the oldest and most widely used CI server you run yourself. It gives you a web dashboard, a job queue, a list of worker machines ("agents"), and over a thousand plugins. A <em>Jenkinsfile</em> lists a job's steps.</p>
+  <p>The earlier EasyCI work built a careful Jenkins setup: Jenkins inside Docker, 37 locked plugins, an admin account, and a demo job that passed. It proved the idea, and it also showed why Jenkins is a poor fit here:</p>
+  <ul>
+    <li>It needs Docker (currently broken on this PC) and Java (not installed) before it can run anything.</li>
+    <li>Each run needed a person to make a snapshot, paste a 64-character code into a form, and click approve. That's hard for a beginner and awkward for an AI agent.</li>
+    <li>It doesn't read the existing <code>.github/workflows</code> files, so every check would be described twice.</li>
+    <li>It's a large system for one person to keep patched and safe.</li>
+  </ul>
+  <p>Jenkins is a commercial kitchen. One developer working with AI agents needs a well-organised home kitchen. The EasyCI plan keeps the good ideas from the Jenkins work (exact-commit snapshots, checksums, releases that are never overwritten) and replaces Jenkins itself with a small tool.</p>
+</section>
+
+<section>
+  <h2><span class="n">6</span>How this serves data science and your projects</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Need</th><th>What EasyCI does about it</th></tr></thead>
+    <tbody>
+      <tr><td>Long jobs</td><td>Training or full validation can take hours. Local runs have no per-minute bill, and the background supervisor keeps them alive.</td></tr>
+      <tr><td>GPUs</td><td>GitHub's standard runners have no GPU, which is why JuliaFlow's hardware smoke test skips CUDA there. Your PC can run the real GPU path.</td></tr>
+      <tr><td>Big files</td><td>Datasets and models don't belong in Git. Run outputs go to a local store with checksums, alongside tools like DVC.</td></tr>
+      <tr><td>Reproducibility</td><td>Every run records the commit, Julia and Node versions, package lock files and output checksums, so you can say later exactly what produced a model or release.</td></tr>
+      <tr><td>Comparing results</td><td>A job can write a small metrics file (accuracy, run time, row counts) that shows up in the status, so a worse model is as visible as a failing test.</td></tr>
+    </tbody>
+  </table></div>
+  <p>For JuliaFlow: you push a branch; EasyCI runs web, Julia and release checks on your PC; the pull request shows the three results; and <code>easyci explain</code> tells you in plain words which step failed and where its log is. When a release candidate passes, the exact package that was tested is copied into a numbered local release with a receipt. It's never rebuilt, so what you ship is exactly what was tested.</p>
+</section>
+
+<section>
+  <h2>Words used on this page</h2>
+  <dl>
+    <dt>Workflow</dt><dd>A file in <code>.github/workflows/</code> that lists jobs and their steps.</dd>
+    <dt>Job</dt><dd>A group of steps that runs on one machine, like <code>web</code> or <code>julia</code>.</dd>
+    <dt>Runner, agent</dt><dd>The computer that actually runs a job.</dd>
+    <dt>Pull request</dt><dd>A proposed change, shown on GitHub with its check results.</dd>
+    <dt>Commit status</dt><dd>The ✓, ✗ or ● next to a commit on GitHub.</dd>
+    <dt>Artifact</dt><dd>A file a job produces and keeps: a log, a report, a package.</dd>
+    <dt>Evidence</dt><dd>EasyCI's record of a run: logs, versions, checksums and outcome.</dd>
+    <dt>WSL</dt><dd>Windows Subsystem for Linux: a real Linux environment inside Windows.</dd>
+    <dt>Docker</dt><dd>A tool that runs programs in isolated "containers".</dd>
+  </dl>
+</section>
+</main>
