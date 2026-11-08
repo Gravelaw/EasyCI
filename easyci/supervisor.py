@@ -42,6 +42,22 @@ def ignore_console_signals():
         ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
 
 
+def toolchain_problem(job, tool, probe):
+    """(reason, fix) when the backend lacks the requested toolchain, else None."""
+    where = job['backend'].replace('wsl:', 'WSL distro ')
+    actual = probe.get(tool['tool'])
+    if not actual:
+        return (f'toolchain_missing:{tool["tool"]}',
+                f'Install {tool["tool"]} on {where}, or set toolchains: {{{tool["tool"]}: ignore}} for job {job["id"]} in easyci.yml.')
+    if tool['requested'] and not backends.version_matches(tool['requested'], actual):
+        have = re.search(r'\d+(?:\.\d+)*', actual).group(0)
+        return (f'toolchain_mismatch:{tool["tool"]} {have} != {tool["requested"]}',
+                f'{where} has {tool["tool"]} {have} but the workflow asks for {tool["requested"]}. Install '
+                f'{tool["tool"]} {tool["requested"]} there, pick another backend, or set toolchains: '
+                f'{{{tool["tool"]}: ignore}} for job {job["id"]} in easyci.yml.')
+    return None
+
+
 def inside_workspace(path):
     """True for a relative path that cannot climb out of the workspace (no drive, root or `..`)."""
     norm = str(path).replace('\\', '/')
@@ -259,7 +275,12 @@ class Supervisor:
             return 'skipped', 'skipped_by_config', None
         if job['unsupported']:
             return 'unsupported', job['unsupported'][0], 'Change the workflow or add an override in easyci.yml.'
-        status = 'success' if all(n['result'] == 'success' for n in needs.values()) else 'failure'
+        # As on GitHub: success() needs every dependency to have succeeded, failure() needs one to have
+        # failed. A skipped or cancelled dependency makes both false, so an `if: failure()` rollback
+        # does not run just because an optional upstream job was disabled.
+        results = [n['result'] for n in needs.values()]
+        status = ('success' if all(r == 'success' for r in results)
+                  else 'failure' if any(r == 'failure' for r in results) else 'skipped')
         if job['when'] != 'always':
             ctx = {'github': self.plan['github'], 'needs': needs, 'status': status, 'env': job['env'],
                    'runner': {'os': 'Windows' if job['backend'] == 'native' else 'Linux'}}
@@ -271,18 +292,12 @@ class Supervisor:
         missing = [n for n in job['required_env'] if n not in os.environ]
         if missing:
             return 'unsupported', f'missing_env:{missing[0]}', f'Set {missing[0]} before running easyci run.'
-        where = job['backend'].replace('wsl:', 'WSL distro ')
         for tool in job['toolchains']:
-            actual = probe.get(tool['tool'])
-            if not actual:
-                return ('unsupported', f'toolchain_missing:{tool["tool"]}',
-                        f'Install {tool["tool"]} on {where}, or set toolchains: {{{tool["tool"]}: ignore}} for job {job["id"]} in easyci.yml.')
-            if tool['requested'] and not backends.version_matches(tool['requested'], actual):
-                have = re.search(r'\d+(?:\.\d+)*', actual).group(0)
-                return ('unsupported', f'toolchain_mismatch:{tool["tool"]} {have} != {tool["requested"]}',
-                        f'{where} has {tool["tool"]} {have} but the workflow asks for {tool["requested"]}. Install '
-                        f'{tool["tool"]} {tool["requested"]} there, pick another backend, or set toolchains: '
-                        f'{{{tool["tool"]}: ignore}} for job {job["id"]} in easyci.yml.')
+            if tool.get('if') not in (None, ''):
+                continue  # a conditional setup step is checked when (and if) it actually runs
+            problem = toolchain_problem(job, tool, probe)
+            if problem:
+                return ('unsupported', *problem)
         if self.plan.get('gpu') == 'required' and not probe.get('nvidia-smi'):
             return 'unsupported', 'gpu_missing', f'nvidia-smi was not found on {where}; install the GPU driver.'
         return None
@@ -474,7 +489,13 @@ class Supervisor:
             self.marker(f'checked out {self.run["commit"]} (tree {self.run["tree"]})')
             return True, {}
         if kind == 'toolchain':
-            actual = self.probes.get(job['backend'], {}).get(step['tool'])
+            probe = self.probes.get(job['backend'], {})
+            entry = next((t for t in job['toolchains'] if t.get('step') == step['index']), None)
+            problem = toolchain_problem(job, entry, probe) if entry and entry.get('if') not in (None, '') else None
+            if problem:  # a conditional setup step that is now enabled: enforce it here
+                self.marker(f'{problem[0]}. {problem[1]}')
+                return False, {'exit_code': 1}
+            actual = probe.get(step['tool'])
             self.marker(f'{step["tool"]} {actual} verified (requested {step["requested"] or "any"})')
             return True, {}
         if kind == 'cache':

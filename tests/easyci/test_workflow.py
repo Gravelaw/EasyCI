@@ -31,8 +31,8 @@ class JuliaFlowImport(unittest.TestCase):
                          {'execution-policy': 1, 'web': 8, 'julia': 2, 'debian-release-gate': 3})
         self.assertEqual(j['execution-policy']['predicted'], 'run')
         self.assertIn('checkout:actions/checkout@v4', j['web']['mapped'])
-        self.assertEqual(j['web']['toolchains'], [{'tool': 'node', 'requested': '25', 'step': 2}])
-        self.assertEqual(j['julia']['toolchains'], [{'tool': 'julia', 'requested': '1.12', 'step': 2}])
+        self.assertEqual(j['web']['toolchains'], [{'tool': 'node', 'requested': '25', 'step': 2, 'if': None}])
+        self.assertEqual(j['julia']['toolchains'], [{'tool': 'julia', 'requested': '1.12', 'step': 2, 'if': None}])
         self.assertIn('upload-artifact:actions/upload-artifact@v4', j['debian-release-gate']['mapped'])
         # head.sha checkout ref resolves to the run commit, so it is mapped, not unsupported
         self.assertEqual(j['debian-release-gate']['steps'][0]['kind'], 'checkout')

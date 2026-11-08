@@ -339,7 +339,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
                       'uses': step.get('uses'), 'decision': str(error)}
         out['steps'].append(mapped)
         if mapped['kind'] == 'toolchain' and out['toolchain_policy'].get(mapped['tool']) != 'ignore':
-            out['toolchains'].append({'tool': mapped['tool'], 'requested': mapped['requested'], 'step': index})
+            out['toolchains'].append({'tool': mapped['tool'], 'requested': mapped['requested'], 'step': index,
+                                      'if': mapped.get('if')})
     if not out['steps']:
         reasons.append('unsupported_job:no steps')
     return out
@@ -443,7 +444,9 @@ def predict(plan):
     results = {}
     for job in plan['jobs']:
         needs = {n: {'result': results.get(n, 'skipped'), 'outputs': {}} for n in job['needs']}
-        status = 'success' if all(v['result'] == 'success' for v in needs.values()) else 'failure'
+        results_ = [v['result'] for v in needs.values()]
+        status = ('success' if all(r == 'success' for r in results_)
+                  else 'failure' if any(r == 'failure' for r in results_) else 'skipped')  # same rule as the supervisor
         if job['skip']:
             state, reason = 'skipped', 'skipped_by_config'
         elif job['unsupported']:

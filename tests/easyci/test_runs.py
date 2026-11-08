@@ -439,6 +439,29 @@ jobs:
         self.assertEqual((code, data['state']), (0, 'passed'), data)
         self.assertEqual((self.run_dir(data['run_id']) / 'jobs/ar/artifacts/res/result.txt').read_text().strip(), 'kept')
 
+    def test_skipped_dependency_is_not_a_failure(self):
+        workflow = ('on: push\njobs:\n  deploy:\n    if: false\n    runs-on: ubuntu-latest\n    steps: [{run: exit 0}]\n'
+                    '  rollback:\n    needs: deploy\n    if: failure()\n    runs-on: ubuntu-latest\n    steps: [{run: exit 42}]\n'
+                    '  cleanup:\n    needs: deploy\n    if: always()\n    runs-on: ubuntu-latest\n    steps: [{run: exit 0}]\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report')['run_id'])
+        states = {j['name']: j['state'] for j in data['jobs']}
+        self.assertEqual(states, {'deploy': 'skipped', 'rollback': 'skipped', 'cleanup': 'passed'}, data)
+        self.assertEqual(code, 0)
+
+    def test_disabled_setup_step_does_not_block_the_job(self):
+        os.environ['EASYCI_FAKE_PROBES'] = json.dumps({'node': 'v26.3.0'})
+        workflow = ('on: push\njobs:\n  tc:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/setup-node@v4\n        if: false\n        with: {node-version: 25}\n'
+                    '      - run: echo tests ran\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--backend', 'fake', '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        # Enabled at run time (by an env value) the same setup step is enforced and fails the job.
+        enabled = workflow.replace('if: false', "if: env.WANT == 'yes'").replace('    steps:', "    env: {WANT: 'yes'}\n    steps:")
+        code, data = self.wait(self.start(self.make_repo(enabled, name='on'), '--backend', 'fake', '--no-report')['run_id'])
+        self.assertEqual((code, data['state']), (1, 'failed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/tc/log.txt').read_text()
+        self.assertIn('toolchain_mismatch:node 26.3.0 != 25', log)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'
