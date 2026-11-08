@@ -386,6 +386,7 @@ class Supervisor:
                     self.marker(f'cache {"saved" if saved else "not saved (key exists or nothing to store)"}: {key}')
                 except Exception as error:  # noqa: BLE001 - a cache failure never fails the job
                     self.marker(f'cache save failed: {error}')
+        if self.kill_reason and job.get('on_kill') and self.step_env is not None:
             self.run_on_kill(job, jr, backend, ws, job_dir)
         try:
             if job['evidence']:
