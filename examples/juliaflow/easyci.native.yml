@@ -14,6 +14,9 @@ report: true
 busy_paths: [artifacts/local-ci/*/summary.json]
 profiles:
   pr-native: {event: pull_request, jobs: [web, julia]}
+  # Phase 3: the release-candidate workflow natively (Playwright, the full release suite), then
+  #   easyci promote <run-id> --artifact debian-release-verification --to D:\Releases\JuliaFlow
+  rc-native: {event: workflow_dispatch, workflow: release-candidate.yml, jobs: [debian-release-gate]}
 jobs:
   execution-policy:
     skip: true                          # hosted-only gate; EasyCI decides locally
@@ -35,5 +38,11 @@ jobs:
     when: always
     timeout_minutes: 240
     stall_minutes: 45                   # Pkg.instantiate and precompile are quiet
+    services: {postgres: {version: 16}}
+    env: *juliaflow-env
+  debian-release-gate:
+    when: always
+    timeout_minutes: 180
+    stall_minutes: 45
     services: {postgres: {version: 16}}
     env: *juliaflow-env
