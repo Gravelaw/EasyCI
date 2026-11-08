@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 from easyci import explain, store
 
 DEFAULT_PORT = 8765
+MAX_BODY = 65536  # bytes; the page only ever posts a folder path
 
 
 def projects():
@@ -194,15 +195,27 @@ def make_handler(token, port):
             self.send(HTTPStatus.NOT_FOUND, 'not found', 'text/plain')
 
         def do_POST(self):  # noqa: N802
+            # Read the body before any refusal: on Windows, closing a socket that
+            # still holds unread request bytes resets the connection, and the
+            # client sees an abort instead of the 403.
+            try:
+                length = int(self.headers.get('Content-Length') or 0)
+            except ValueError:
+                length = -1
+            if not 0 <= length <= MAX_BODY:
+                self.close_connection = True
+                return self.send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, 'request body too large', 'text/plain')
+            raw = self.rfile.read(length) if length else b''
             if not self.guard():
                 return
             if not secrets.compare_digest(self.headers.get('X-EasyCI-Token', ''), token):
                 return self.doc(error={'code': 'BAD_TOKEN', 'message': 'Missing or wrong page token.'},
                                 status=HTTPStatus.FORBIDDEN)
-            length = min(int(self.headers.get('Content-Length') or 0), 65536)
             try:
-                body = json.loads(self.rfile.read(length) or b'{}')
+                body = json.loads(raw or b'{}')
             except ValueError:
+                body = {}
+            if not isinstance(body, dict):
                 body = {}
             parts = [p for p in urlparse(self.path).path.split('/') if p]
             from easyci import cli
