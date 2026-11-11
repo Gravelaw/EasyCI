@@ -58,6 +58,10 @@ def promote(rd, name, dest_root, version=None):
     if not files:
         raise PromoteError('NO_ARTIFACT', f'Run {rd.name} has no artifact named {name}.',
                            'Check the upload-artifact name (easyci status shows the jobs).')
+    if any(rel.replace('\\', '/').lower() == 'receipt.json' for rel in files):
+        # The release's own receipt lives there; overwriting the tested file would change the release.
+        raise PromoteError('RESERVED_NAME', f'Artifact {name} has a top-level receipt.json, a name EasyCI keeps '
+                           'for the release receipt.', 'Rename that file in the workflow (or put it in a folder).')
     for rel, (path, sha) in files.items():
         if not path.is_file() or path.is_symlink() or store.digest(path) != sha:
             raise PromoteError('ARTIFACT_CHANGED', f'{name}/{rel} no longer matches the tested file.',
