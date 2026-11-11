@@ -650,6 +650,9 @@ class Caches(EasyCITest):
         c = cache.NativeCache('proj')
         exercise_cache(self, c, ws, write, lambda rel: (ws / rel).read_text(), link=lambda a, b: os.link(ws / a, ws / b))
         self.assertEqual(sorted(p.name for p in (self.tmp / 'new' / 'linked').iterdir()), ['a.txt', 'b.txt'])
+        # Review finding: restoring over the original folder, where the hard links already are, must work.
+        self.assertEqual(c.restore(ws, ['linked'], 'k2', []), ('k2', True))
+        self.assertEqual((ws / 'linked' / 'b.txt').read_text(), 'shared')
         self.assertEqual((self.tmp / 'new' / 'linked' / 'b.txt').read_text(), 'shared')
 
 
