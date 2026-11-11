@@ -218,6 +218,37 @@ jobs:
         self.assertEqual({j['group'] for j in plan['jobs'][:4]}, {'test'})
         self.assertEqual(by['after']['needs'], ['test'])
 
+    def test_include_follows_githubs_documented_example(self):
+        # docs.github.com, "Expanding or adding matrix configurations".
+        job = {'strategy': {'matrix': {'fruit': ['apple', 'pear'], 'animal': ['cat', 'dog'], 'include': [
+            {'color': 'green'}, {'color': 'pink', 'animal': 'cat'}, {'fruit': 'apple', 'shape': 'circle'},
+            {'fruit': 'banana'}, {'fruit': 'banana', 'animal': 'cat'}]}}}
+        combos = [c for c, _ in workflow.expand_matrix(job, {})]
+        self.assertEqual(combos, [
+            {'fruit': 'apple', 'animal': 'cat', 'color': 'pink', 'shape': 'circle'},
+            {'fruit': 'apple', 'animal': 'dog', 'color': 'green', 'shape': 'circle'},
+            {'fruit': 'pear', 'animal': 'cat', 'color': 'pink'},
+            {'fruit': 'pear', 'animal': 'dog', 'color': 'green'},
+            {'fruit': 'banana'},
+            {'fruit': 'banana', 'animal': 'cat'}])
+        # Review finding: an entry with only extra keys applies to every combination, adding none.
+        job = {'strategy': {'matrix': {'os': ['ubuntu', 'windows'], 'include': [{'color': 'green'}]}}}
+        self.assertEqual([c for c, _ in workflow.expand_matrix(job, {})],
+                         [{'os': 'ubuntu', 'color': 'green'}, {'os': 'windows', 'color': 'green'}])
+
+    def test_matrix_ids_never_collide_with_other_jobs(self):
+        # Review finding: matrix `t` with v: [1, 2] next to an ordinary job `t-1`.
+        text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: {v: [1, 2]}\n'
+                '    steps: [{run: echo hi}]\n  t-1:\n    runs-on: ubuntu-latest\n    steps: [{run: echo plain}]\n'
+                '  after:\n    needs: [t, t-1]\n    runs-on: ubuntu-latest\n    steps: [{run: echo done}]\n')
+        jobs = self.plan(text)['jobs']
+        ids = [j['id'] for j in jobs]
+        self.assertEqual(len(ids), len(set(ids)), ids)
+        self.assertEqual(sorted((j['group'], j['matrix'].get('v')) for j in jobs if j['group'] == 't'),
+                         [('t', 1), ('t', 2)])
+        self.assertIn('t-1', ids)
+        self.assertEqual(ids[-1], 'after')
+
     def test_runs_on_from_the_matrix_and_fromjson(self):
         text = ('on: push\njobs:\n  t:\n    runs-on: ${{ matrix.os }}\n    strategy:\n'
                 "      matrix: '${{ fromJSON(''{\"os\": [\"ubuntu-latest\", \"windows-latest\"]}'') }}'\n"
