@@ -568,7 +568,7 @@ class Supervisor:
             with open(job_dir / 'summary.md', 'a', encoding='utf-8') as handle:
                 handle.write(summary + '\n')
         for path in files.values():
-            path.unlink(missing_ok=True)
+            store.remove_file(path)
         if outcome:
             result['outcome'] = outcome
             return False, result
