@@ -246,7 +246,10 @@ def job_for(stack, have, linux):
         if s['tests']:
             steps.append("      - run: julia --project=. -e 'using Pkg; Pkg.test()'")
     elif kind == 'go':
-        version = s.get('version') or tool_major(have, 'go', 2) or '1.22'
+        # go.mod's `go 1.21` is a minimum: the installed Go is requested when it is that new or newer.
+        installed = tool_major(have, 'go', 2)
+        minimum = s.get('version')
+        version = (installed if installed and minimum and satisfies(installed, f'>={minimum}') else minimum)             or installed or '1.22'
         steps.append(f'      - uses: actions/setup-go@v5\n        with:\n          go-version: "{version}"')
         steps += ['      - run: go build ./...', '      - run: go test ./...']
     elif kind == 'rust':

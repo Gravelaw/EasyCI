@@ -26,7 +26,9 @@ GITHUB = {('sha',), ('ref',), ('ref_name',), ('ref_type',), ('head_ref',), ('bas
           ('repository_owner',), ('event_name',), ('server_url',), ('event', 'pull_request', 'head', 'sha'),
           ('event', 'pull_request', 'base', 'sha'), ('event', 'repository', 'default_branch')}
 CONTEXTS = ('github', 'env', 'runner', 'needs', 'steps', 'matrix', 'strategy', 'job')
-TEMPLATE = re.compile(r'\$\{\{(.*?)\}\}', re.S)
+# `${{ ... }}`: the body may hold '...' strings (with '' escapes) containing `}}`, as in
+# fromJSON('{"a": {"b": 1}}') or format('{{0}}', x); only a `}}` outside quotes ends it.
+TEMPLATE = re.compile(r"\$\{\{((?:[^'}]|'(?:[^']|'')*'|\}(?!\}))*)\}\}", re.S)
 COMPARE = {'==': 'eq', '!=': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge'}
 
 

@@ -125,6 +125,12 @@ class Onboarding(EasyCITest):
         code, doc, _ = self.call('setup', '--repo', repo)
         self.assertEqual((code, doc['data']['files']), (0, []))
 
+    def test_go_directive_is_a_minimum(self):
+        # Review finding: `go 1.21` with Go 1.23 installed requested exactly 1.21, which was then rejected.
+        go = {'stack': 'go', 'version': '1.21'}
+        self.assertIn('go-version: "1.23"', onboard.workflow_text([go], PROBES, True))
+        self.assertIn('go-version: "1.21"', onboard.workflow_text([go], {'go': 'go version go1.20.1'}, True))
+
     def test_julia_override_only_for_the_starter_job(self):
         # Review finding: a Julia repo with its own workflow (job `test`) got `jobs: {julia: ...}` in
         # easyci.yml, which names a job that does not exist, so every run was refused.
