@@ -61,6 +61,27 @@ def pick(entries, key, restore_keys, paths):
 
 # ---- native -------------------------------------------------------------------------------
 
+def restore_symlink(linkname, dest, root):
+    """Recreate a cached symbolic link. Windows may refuse (no Developer Mode); then a link that points
+    inside the cached folder is restored as a copy of what it points to."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    linkname = linkname.replace('/', os.sep)  # tar stores `/`; a Windows link with `/` does not resolve
+    pointed = (dest.parent / linkname).resolve()
+    try:
+        os.symlink(linkname, dest, target_is_directory=pointed.is_dir())
+        return
+    except OSError:
+        pass
+    try:
+        pointed.relative_to(pathlib.Path(root).resolve())
+    except ValueError:
+        return  # outside the cached folder: nothing safe to copy
+    if pointed.is_dir():
+        shutil.copytree(pointed, dest, dirs_exist_ok=True)
+    elif pointed.is_file():
+        shutil.copyfile(pointed, dest)
+
+
 class NativeCache:
     def __init__(self, project):
         self.dir = store.home() / 'cache' / project
@@ -89,6 +110,7 @@ class NativeCache:
                 target = self.resolve(ws, path)
                 prefix = f'p{i}'
                 members = [m for m in tar.getmembers() if m.name == prefix or m.name.startswith(prefix + '/')]
+                links = []
                 for member in members:
                     rel = member.name[len(prefix):].lstrip('/')
                     dest = target / rel if rel else target
@@ -104,6 +126,10 @@ class NativeCache:
                         if source.is_file():
                             dest.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copyfile(source, dest)
+                    elif member.issym():
+                        links.append((member, dest))
+                for member, dest in links:  # after the files and folders they may point to
+                    restore_symlink(member.linkname, dest, target)
         os.utime(archive)  # recently used entries survive pruning
         return entry['key'], exact
 
