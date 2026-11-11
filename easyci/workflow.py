@@ -312,6 +312,9 @@ def plan_step(index, step, ctx):
         if any(k.endswith('-file') for k in with_):
             raise Unsupported(f'toolchain_spec_unsupported:{tool} version file')
         requested = with_.get(key)
+        if isinstance(requested, str) and '${{' in requested:  # e.g. node-version: ${{ matrix.node }}
+            requested = expr.to_str(expr.interpolate(requested, {'github': ctx['github'], 'matrix': ctx.get('matrix') or {},
+                                                                 'strategy': ctx.get('strategy') or {}}))
         if requested is not None:
             version_spec(requested, tool)
         out.update(kind='toolchain', tool=tool, requested=None if requested is None else str(requested),
@@ -505,7 +508,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
     defaults = {**((wf.get('defaults') or {}).get('run') or {}), **((job.get('defaults') or {}).get('run') or {})}
     skip_steps = jcfg.get('skip_steps', [])
     # The resolved runner (a matrix `runs-on: ${{ matrix.os }}` is already filled in) picks the default shell.
-    ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(out['runs_on']), 'github': gh}
+    ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(out['runs_on']), 'github': gh,
+           'matrix': matrix or {}, 'strategy': strategy or {}}
     for index, step in enumerate(job.get('steps') or [], 1):
         if not isinstance(step, dict):
             raise ConfigError(f'{wf_path}: job {jid} step {index} must be a mapping')

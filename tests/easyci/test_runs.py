@@ -658,3 +658,30 @@ class ArtifactNames(EasyCITest):
         self.assertEqual((code, data['state']), (0, 'passed'), data)
         log = (self.run_dir(data['run_id']) / 'jobs/use/log.txt').read_text()
         self.assertEqual(log.count('payload'), 4, log)
+
+
+class CacheLinks(EasyCITest):
+    def test_symlinks_in_a_native_cache_come_back(self):
+        # Review finding: symbolic links in a cached folder were silently dropped on restore.
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'deps' / 'bin').mkdir(parents=True)
+        (ws / 'deps' / 'tool.txt').write_text('real')
+        try:
+            os.symlink('../tool.txt', ws / 'deps' / 'bin' / 'tool')
+        except OSError:
+            self.skipTest('this Windows account cannot create symbolic links')
+        c = cache.NativeCache('links')
+        self.assertTrue(c.save(ws, ['deps'], 'k'))
+        new = self.tmp / 'new'
+        new.mkdir()
+        self.assertEqual(c.restore(new, ['deps'], 'k', []), ('k', True))
+        self.assertEqual((new / 'deps' / 'bin' / 'tool').read_text(), 'real')
+        # Without permission to create links, a link inside the folder becomes a copy.
+        from unittest import mock
+        other = self.tmp / 'other'
+        other.mkdir()
+        with mock.patch.object(cache.os, 'symlink', side_effect=OSError('not permitted')):
+            c.restore(other, ['deps'], 'k', [])
+        self.assertEqual((other / 'deps' / 'bin' / 'tool').read_text(), 'real')
+        self.assertFalse((other / 'deps' / 'bin' / 'tool').is_symlink())

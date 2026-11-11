@@ -304,6 +304,15 @@ jobs:
         self.assertEqual(jobs['t-windows-latest']['steps'][0]['shell'], 'pwsh')
         self.assertEqual(jobs['t-ubuntu-latest']['steps'][0]['shell'], 'bash')
 
+    def test_setup_versions_from_the_matrix(self):
+        # Review finding: `node-version: ${{ matrix.node }}` made every combination unsupported.
+        text = ('on: push' + chr(10) + 'jobs:' + chr(10) + '  t:' + chr(10) + '    runs-on: ubuntu-latest' + chr(10) +
+                '    strategy: {matrix: {node: [20, 22]}}' + chr(10) + '    steps:' + chr(10) +
+                '      - uses: actions/setup-node@v4' + chr(10) + '        with: {node-version: "${{ matrix.node }}"}' + chr(10))
+        jobs = self.plan(text, default_backend='fake')['jobs']
+        self.assertEqual([(j['id'], j['predicted'], j['toolchains'][0]['requested']) for j in jobs],
+                         [('t-20', 'run', '20'), ('t-22', 'run', '22')])
+
     def test_matrix_from_needs_outputs_is_unsupported(self):
         text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n'
                 '      matrix: ${{ fromJSON(needs.a.outputs.m) }}\n    steps: [{run: echo hi}]\n')
