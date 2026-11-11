@@ -11,9 +11,15 @@ report: true
 # Wait while someone runs JuliaFlow's own runner by hand on the same checkout: its summary says
 # `status: running` and its folder keeps changing. A crashed run's stale summary does not block.
 busy_paths: [artifacts/local-ci/*/summary.json]
+# JuliaFlow's runner keeps a warm cache (Julia depot, npm and Playwright caches) in the distro under
+# /ci-cache/<key>, locked with flock and keyed by the dependency files, so a warm run reuses what an
+# earlier run installed. The -cold profiles start from empty caches, for evidence that must not
+# depend on earlier runs (the exit runs and the delegated comparison runs were cold).
 profiles:
-  pr:   {event: pull_request, jobs: [web, julia, debian-release-gate]}
-  push: {event: push,         jobs: [web, julia]}
+  pr:        {event: pull_request, jobs: [web, julia, debian-release-gate]}
+  pr-cold:   {event: pull_request, jobs: [web, julia, debian-release-gate]}
+  push:      {event: push,         jobs: [web, julia]}
+  push-cold: {event: push,         jobs: [web, julia]}
 jobs:
   execution-policy:
     skip: true                          # hosted-only gate; EasyCI decides locally
@@ -22,7 +28,7 @@ jobs:
     backend: native
     timeout_minutes: 360
     stall_minutes: 30
-    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job web --cache cold
+    command: 'node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job web --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"'
     evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/web/**]
     # When EasyCI stops a job (cancel, timeout, stall kill) it kills wsl.mjs outright, so wsl.mjs never
     # reaches its own cleanup and the WSL job keeps its PostgreSQL cluster, 3 GiB swap file and
@@ -57,7 +63,7 @@ jobs:
     backend: native
     timeout_minutes: 360
     stall_minutes: 45                   # Pkg.instantiate and precompile are quiet
-    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job julia --cache cold
+    command: 'node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job julia --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"'
     evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/julia/**]
     on_kill: *release-wsl-job
   debian-release-gate:
@@ -65,7 +71,7 @@ jobs:
     backend: native
     timeout_minutes: 180
     stall_minutes: 45
-    command: node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job debian-release-gate --cache cold
+    command: 'node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job debian-release-gate --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"'
     evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/debian-release-gate/**]
     on_kill: *release-wsl-job
     required_env: []
