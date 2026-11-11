@@ -132,7 +132,11 @@ class NativeCache:
                         # a hard link to a file stored earlier in this path: restore it as a copy
                         source = target / member.linkname[len(prefix):].lstrip('/')
                         if source.is_file():
+                            if dest.exists() and os.path.samefile(source, dest):
+                                continue  # restoring over the same hard link: already in place
                             dest.parent.mkdir(parents=True, exist_ok=True)
+                            if dest.is_symlink() or dest.is_file():
+                                dest.unlink()
                             shutil.copyfile(source, dest)
                     elif member.issym():
                         links.append((member, dest))
