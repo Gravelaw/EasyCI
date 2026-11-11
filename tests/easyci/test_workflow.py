@@ -87,6 +87,36 @@ class Mapping(unittest.TestCase):
         self.assertEqual(plan(['a.md', 'docs/b.md']), [])
         self.assertEqual(len(plan(['a.md', 'src/x.py'])), 1)
 
+    def test_globstar_slash_matches_zero_folders(self):
+        # Review finding: `**/` must also match no folder at all, as on GitHub.
+        for pattern, path, expected in (('**/*.py', 'main.py', True), ('**/*.py', 'a/b/main.py', True),
+                                        ('src/**/*.py', 'src/main.py', True), ('src/**/*.py', 'src/a/main.py', True),
+                                        ('src/**/*.py', 'srcx/main.py', False), ('*.py', 'a/main.py', False),
+                                        ('src/**', 'src/a/b', True), ('docs/?.md', 'docs/a.md', True),
+                                        ('docs/?.md', 'docs/ab.md', False), ('a.b', 'aXb', False)):
+            self.assertEqual(workflow.glob_match(pattern, path), expected, (pattern, path))
+
+    def test_changed_files_are_read_raw_not_quoted(self):
+        # Review finding: git quotes non-ASCII names in its default output.
+        import os
+        import subprocess
+        import tempfile
+        from easyci import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            git = lambda *a: subprocess.run(['git', '-C', tmp, '-c', 'user.name=t', '-c', 'user.email=t@t', *a],  # noqa: E731
+                                            check=True, capture_output=True)
+            git('init', '-q')
+            git('commit', '-q', '--allow-empty', '-m', 'base')
+            os.makedirs(os.path.join(tmp, 'src'))
+            for name in ('café.py', 'über ü.py', ' lead.py'):  # Windows forbids tabs in names
+                with open(os.path.join(tmp, 'src', name), 'w') as f:
+                    f.write('x')
+            git('add', '-A')
+            git('commit', '-q', '-m', 'files')
+            changed = snapshot.changed_files(tmp, 'HEAD~1', 'HEAD')
+        self.assertEqual(sorted(changed), sorted(['src/café.py', 'src/über ü.py', 'src/ lead.py']))
+        self.assertTrue(all(workflow.glob_match('src/**', name) for name in changed))
+
     def test_busy_settings_are_validated(self):
         workflow.load_config('busy_paths: [artifacts/*/summary.json]\nbusy_stale_minutes: 5\nbusy_wait_minutes: 30\n')
         for text in ('busy_paths: x', 'busy_paths: [""]', 'busy_stale_minutes: 0', 'busy_wait_minutes: -1'):
@@ -219,6 +249,37 @@ jobs:
         self.assertEqual(by['test-macos-22']['strategy']['job-total'], 4)
         self.assertEqual({j['group'] for j in plan['jobs'][:4]}, {'test'})
         self.assertEqual(by['after']['needs'], ['test'])
+
+    def test_include_follows_githubs_documented_example(self):
+        # docs.github.com, "Expanding or adding matrix configurations".
+        job = {'strategy': {'matrix': {'fruit': ['apple', 'pear'], 'animal': ['cat', 'dog'], 'include': [
+            {'color': 'green'}, {'color': 'pink', 'animal': 'cat'}, {'fruit': 'apple', 'shape': 'circle'},
+            {'fruit': 'banana'}, {'fruit': 'banana', 'animal': 'cat'}]}}}
+        combos = [c for c, _ in workflow.expand_matrix(job, {})]
+        self.assertEqual(combos, [
+            {'fruit': 'apple', 'animal': 'cat', 'color': 'pink', 'shape': 'circle'},
+            {'fruit': 'apple', 'animal': 'dog', 'color': 'green', 'shape': 'circle'},
+            {'fruit': 'pear', 'animal': 'cat', 'color': 'pink'},
+            {'fruit': 'pear', 'animal': 'dog', 'color': 'green'},
+            {'fruit': 'banana'},
+            {'fruit': 'banana', 'animal': 'cat'}])
+        # Review finding: an entry with only extra keys applies to every combination, adding none.
+        job = {'strategy': {'matrix': {'os': ['ubuntu', 'windows'], 'include': [{'color': 'green'}]}}}
+        self.assertEqual([c for c, _ in workflow.expand_matrix(job, {})],
+                         [{'os': 'ubuntu', 'color': 'green'}, {'os': 'windows', 'color': 'green'}])
+
+    def test_matrix_ids_never_collide_with_other_jobs(self):
+        # Review finding: matrix `t` with v: [1, 2] next to an ordinary job `t-1`.
+        text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: {v: [1, 2]}\n'
+                '    steps: [{run: echo hi}]\n  t-1:\n    runs-on: ubuntu-latest\n    steps: [{run: echo plain}]\n'
+                '  after:\n    needs: [t, t-1]\n    runs-on: ubuntu-latest\n    steps: [{run: echo done}]\n')
+        jobs = self.plan(text)['jobs']
+        ids = [j['id'] for j in jobs]
+        self.assertEqual(len(ids), len(set(ids)), ids)
+        self.assertEqual(sorted((j['group'], j['matrix'].get('v')) for j in jobs if j['group'] == 't'),
+                         [('t', 1), ('t', 2)])
+        self.assertIn('t-1', ids)
+        self.assertEqual(ids[-1], 'after')
 
     def test_runs_on_from_the_matrix_and_fromjson(self):
         text = ('on: push\njobs:\n  t:\n    runs-on: ${{ matrix.os }}\n    strategy:\n'

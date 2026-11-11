@@ -99,7 +99,7 @@ class Wsl:
             exe = PROBE_TOOLS.get(tool, tool)
             flag = '-version' if tool == 'java' else 'version' if tool == 'go' else '-L' if tool == 'nvidia-smi' else '--version'
             lines.append(f'printf "%s=" {shlex.quote(tool)}; if command -v {shlex.quote(exe)} >/dev/null; then '
-                         f'{shlex.quote(exe)} {flag} 2>&1 | head -n 1; else echo; fi')
+                         f'{shlex.quote(exe)} {flag} 2>&1 | grep -m 1 .; else echo; fi')  # first non-empty line (gradle starts blank)
         if 'julia' in tools:
             lines.append('printf "julia_depot=%s\\n" "${JULIA_DEPOT_PATH:-$HOME/.julia}"')
         code, text = wsl_run(self.distro, '\n'.join(lines), timeout=120)
@@ -184,6 +184,19 @@ class Wsl:
         return find_metrics(self.unc(ws))
 
     # Services live under /var/tmp/easyci/<run>/<job> (readable by the postgres user, unlike /root).
+    # As root, PostgreSQL runs as the distro's postgres user (initdb refuses root); as a normal
+    # default user it runs as that user, which needs no privileges.
+    AS_PG = ('if [ "$(id -u)" = 0 ]; then as_pg() { runuser -u postgres -- "$@"; }; pg_owner=postgres; '
+             'else as_pg() { "$@"; }; pg_owner=$(id -un); fi')
+
+    @staticmethod
+    def kill_pg(folder, pid_files):
+        # As root, every leftover process of the postgres user under that folder. As a normal user,
+        # `pkill -f` would also match this very shell (its command line names the folder), so the
+        # postmasters are found through their pid files instead.
+        return (f'if [ "$pg_owner" = postgres ]; then pkill -u postgres -f -- {folder}/; '
+                f'else for f in {pid_files}; do [ -f "$f" ] && kill -9 "$(head -1 "$f")"; done; fi 2>/dev/null')
+
     def service_dir(self, run_id, job):
         return f'/var/tmp/easyci/{run_id}/{job}'
 
@@ -198,14 +211,17 @@ class Wsl:
         d = self.service_dir(run_id, job)
         q = shlex.quote
         script = f'''set -e
+{self.AS_PG}
 bin=$(ls -d /usr/lib/postgresql/{q(version) if version else "*"}/bin 2>/dev/null | sort -V | tail -1)
 [ -x "$bin/initdb" ] || {{ echo "PostgreSQL {version or ''} is not installed in this distro (apt install postgresql)" >&2; exit 7; }}
-id postgres >/dev/null 2>&1 || {{ echo "no postgres user in this distro" >&2; exit 7; }}
-rm -rf {q(d)}; mkdir -p {q(d)}/pg {q(d)}/socket; printf %s {q(password)} > {q(d)}/pw
-chown -R postgres:postgres {q(d)}; chmod 700 {q(d)}/pg; chmod 600 {q(d)}/pw
-runuser -u postgres -- "$bin/initdb" -D {q(d)}/pg -U easyci --pwfile={q(d)}/pw --auth-host=scram-sha-256 --auth-local=trust --no-instructions >{q(d)}/init.log 2>&1
-runuser -u postgres -- "$bin/pg_ctl" -D {q(d)}/pg -l {q(d)}/postgres.log -o "-p {port} -h 127.0.0.1 -k {d}/socket" -w -t 60 start >{q(d)}/start.log 2>&1
-runuser -u postgres -- "$bin/createdb" -h {q(d)}/socket -p {port} -U easyci easyci
+[ "$pg_owner" != postgres ] || id postgres >/dev/null 2>&1 || {{ echo "no postgres user in this distro" >&2; exit 7; }}
+if [ "$pg_owner" = postgres ]; then install -d -m 1777 /var/tmp/easyci; fi  # shared by every user, like /tmp
+rm -rf {q(d)}; mkdir -p {q(d)}/pg {q(d)}/socket || {{ echo "cannot create {d} as $(id -un)" >&2; exit 7; }}
+printf %s {q(password)} > {q(d)}/pw
+chown -R "$pg_owner" {q(d)}; chmod 700 {q(d)}/pg; chmod 600 {q(d)}/pw
+as_pg "$bin/initdb" -D {q(d)}/pg -U easyci --pwfile={q(d)}/pw --auth-host=scram-sha-256 --auth-local=trust --no-instructions >{q(d)}/init.log 2>&1
+as_pg "$bin/pg_ctl" -D {q(d)}/pg -l {q(d)}/postgres.log -o "-p {port} -h 127.0.0.1 -k {d}/socket" -w -t 60 start >{q(d)}/start.log 2>&1
+as_pg "$bin/createdb" -h {q(d)}/socket -p {port} -U easyci easyci
 echo "$bin" > {q(d)}/bindir'''
         code, text = wsl_run(self.distro, script, timeout=180)
         if code != 0:
@@ -216,12 +232,12 @@ echo "$bin" > {q(d)}/bindir'''
 
     def stop_services(self, run_id, job):
         d = shlex.quote(self.service_dir(run_id, job))
-        wsl_run(self.distro, f'[ -f {d}/bindir ] && runuser -u postgres -- "$(cat {d}/bindir)/pg_ctl" -D {d}/pg '
-                             f'-m immediate -w -t 30 stop >/dev/null 2>&1; pkill -u postgres -f -- {d}/ 2>/dev/null; '
+        wsl_run(self.distro, f'{self.AS_PG}; [ -f {d}/bindir ] && as_pg "$(cat {d}/bindir)/pg_ctl" -D {d}/pg '
+                             f'-m immediate -w -t 30 stop >/dev/null 2>&1; {self.kill_pg(d, f"{d}/pg/postmaster.pid")}; '
                              f'rm -rf {d}', timeout=120)
 
     def cleanup(self, rd, run_id):
         wsl_run(self.distro, f'rm -rf {shlex.quote(f"{self.home()}/.easyci/work/{run_id}")}', timeout=600)
         services = shlex.quote(f'/var/tmp/easyci/{run_id}')
-        wsl_run(self.distro, f'[ -d {services} ] || exit 0; pkill -u postgres -f -- {services}/ 2>/dev/null; sleep 1; '
+        wsl_run(self.distro, f'[ -d {services} ] || exit 0; {self.AS_PG}; {self.kill_pg(services, f"{services}/*/pg/postmaster.pid")}; sleep 1; '
                              f'rm -rf {services}', timeout=120)

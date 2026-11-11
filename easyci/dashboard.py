@@ -107,12 +107,18 @@ async function api(path, body) {
 }
 async function home() {
   const [p, r] = await Promise.all([api('/api/projects'), api('/api/runs')]);
+  if (!p.ok || !r.ok) {  // every API answer is {ok, schema, data | error}
+    const e = (p.ok ? r : p).error || {};
+    document.getElementById('app').innerHTML = `<div class="card">Could not load: ${esc(e.message)}</div>`;
+    return;
+  }
+  const projects = p.data.projects, runs = r.data.runs;
   let h = '<h2>Projects</h2>';
-  h += p.projects.length ? p.projects.map(x => `<div class="card row"><div class="grow"><b>${esc(x.slug)}</b><div class="muted">${esc(x.repo)}</div></div>
+  h += projects.length ? projects.map(x => `<div class="card row"><div class="grow"><b>${esc(x.slug)}</b><div class="muted">${esc(x.repo)}</div></div>
     <button class="primary" data-repo="${esc(x.repo)}" onclick="runChecks(this.dataset.repo)">Run checks</button></div>`).join('')
     : '<div class="card muted">No projects yet. Run <code>easyci setup</code> in a project folder.</div>';
   h += '<h2>Recent runs</h2>';
-  h += r.runs.length ? r.runs.map(x => `<div class="card"><div class="row"><span class="state ${esc(x.state)}">${esc(x.state)}</span>
+  h += runs.length ? runs.map(x => `<div class="card"><div class="row"><span class="state ${esc(x.state)}">${esc(x.state)}</span>
     <a href="/runs/${esc(x.run_id)}">${esc(x.run_id)}</a><span class="muted">${esc(x.project)} · ${esc((x.commit||'').slice(0,7))}</span></div>
     <div>${esc(x.plain)}</div></div>`).join('') : '<div class="card muted">No runs yet.</div>';
   document.getElementById('app').innerHTML = h;

@@ -149,6 +149,31 @@ class RealWsl(EasyCITest):
         os.environ.pop('EASYCI_WSL', None)
         self.backend = f'wsl:{DISTRO}'
 
+    def test_postgres_service_as_a_non_root_default_user(self):
+        # Review finding: runuser needs root. Run every service command as the distro's `nobody` user,
+        # the way a distro whose default user is not root would, and check start, use and stop.
+        from unittest import mock
+        from easyci.backends import wsl
+        real = wsl.wsl_run
+
+        def as_nobody(distro, script, timeout=120):
+            return wsl.run_quiet([wsl.wsl_exe(), '-d', distro, '-u', 'nobody', '--exec', 'bash', '-c', script],
+                                 timeout=timeout, env={**os.environ, 'WSL_UTF8': '1'})
+        backend, run_id = wsl.Wsl(DISTRO), f'nonroot-{os.getpid()}-{int(time.time())}'
+        with mock.patch.object(wsl, 'wsl_run', as_nobody):
+            env = backend.start_services({'postgres': {}}, run_id, 'j')
+            try:
+                d = backend.service_dir(run_id, 'j')
+                code, text = as_nobody(DISTRO, f'PGPASSWORD={env["PGPASSWORD"]} "$(cat {d}/bindir)/psql" -h 127.0.0.1 '
+                                               f'-p {env["PGPORT"]} -U easyci -d easyci -tAc "select 41 + 1"; '
+                                               f'ps -o user= -p "$(head -1 {d}/pg/postmaster.pid)"')
+                self.assertEqual((code, text.split()), (0, ['42', 'nobody']), text)
+            finally:
+                backend.stop_services(run_id, 'j')
+                backend.cleanup(None, run_id)
+        code, text = real(DISTRO, f'ls /var/tmp/easyci/{run_id} 2>/dev/null; pgrep -u nobody -f "[/]var/tmp/easyci/{run_id}"')
+        self.assertEqual(text.strip(), '', 'the service left files or processes behind')
+
     def group_alive(self, rd, index=1):
         from easyci.backends import wsl
         pgid = (rd / 'jobs/stub/steps' / f'{index}.pgid').read_text().strip()

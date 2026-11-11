@@ -44,6 +44,43 @@ class Watch(EasyCITest):
         for item in doc['data']['started']:
             self.wait(item['run_id'])
 
+    def test_unknown_user_runs_nothing_unless_all_authors(self):
+        # Review finding: a failed `gh api user` used to drop the author filter and run everyone's PRs.
+        repo = self.make_repo(QUICK, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        os.environ['FAKE_GH_PULLS'] = json.dumps([pull(3, head, login='colleague', base=head)])
+        os.environ['FAKE_GH_USER_FAILS'] = '1'
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual((code, doc['error']['code']), (3, 'GH_FAILED'))
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report', '--all-authors')
+        self.assertEqual([s['pr'] for s in doc['data']['started']], [3])
+        self.wait(doc['data']['started'][0]['run_id'])
+
+    def test_watched_runs_see_the_branch_and_unsupported_heads_are_not_requeued(self):
+        # Review findings: github.head_ref was empty in watched runs, and a head whose jobs are all
+        # unsupported was queued again on every cycle.
+        wf = ('on: pull_request\njobs:\n  gated:\n    runs-on: ubuntu-latest\n    if: github.head_ref == \'branch-1\'\n'
+              '    steps:\n      - run: echo "head_ref=${{ github.head_ref }}"\n')
+        repo = self.make_repo(wf, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        os.environ['FAKE_GH_PULLS'] = json.dumps([pull(1, head, base=head)])
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        code, data = self.wait(doc['data']['started'][0]['run_id'])
+        self.assertEqual((data['state'], data['jobs'][0]['state']), ('passed', 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/gated/log.txt').read_text()
+        self.assertIn('head_ref=branch-1', log)
+        docker = ('on: pull_request\njobs:\n  img:\n    runs-on: ubuntu-latest\n    steps:\n'
+                  '      - uses: docker/build-push-action@v5\n')
+        repo = self.make_repo(docker, {'easyci.yml': 'backend: native\n'}, remote=REMOTE, name='unsupported')
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        os.environ['FAKE_GH_PULLS'] = json.dumps([pull(2, head, base=head)])
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual(doc['data']['started'], [])
+        self.assertTrue(doc['data']['skipped'][0]['skipped'].startswith('UNSUPPORTED'), doc)
+        self.wait(doc['data']['skipped'][0]['run_id'])
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual((doc['data']['started'], doc['data']['skipped']), ([], []))
+
     def test_watch_needs_a_github_remote(self):
         repo = self.make_repo(QUICK)
         code, doc, _ = self.call('watch', '--repo', repo, '--once')

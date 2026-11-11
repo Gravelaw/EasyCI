@@ -69,6 +69,34 @@ class Dashboard(EasyCITest):
         self.wait(run['run_id'])
         self.assertNotIn('example.com', self.gh_log.read_text())
 
+    def test_home_page_script_renders_projects_and_runs(self):
+        # Review finding: the page read `p.projects` instead of `p.data.projects` and never rendered.
+        # Run the page's own script in Node against this server, with a minimal document.
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not installed')
+        repo = self.make_repo(QUICK, {'easyci.yml': 'backend: native\nreport: false\n'})
+        code, _ = self.wait(self.start(repo, '--no-report')['run_id'])
+        script = re.search(r'<script>(.*)</script>', self.request('GET', '/')[1], re.S).group(1)
+        harness = (
+            "const base = process.argv[1]; const realFetch = fetch;\n"
+            "globalThis.fetch = (path, opt) => realFetch(base + path, opt);\n"
+            "const app = {innerHTML: 'Loading'};\n"
+            "globalThis.document = {getElementById: id => id === 'app' ? app : null};\n"
+            "globalThis.location = {pathname: '/'};\n"
+            "globalThis.setInterval = () => 0; globalThis.alert = () => {};\n"
+            + script +
+            "\nsetTimeout(() => { console.log(app.innerHTML); }, 1500);\n")
+        result = subprocess.run([node, '-e', harness, f'http://127.0.0.1:{self.port}'], capture_output=True,
+                                text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Run checks', result.stdout)      # the project is listed with its button
+        self.assertIn(str(repo), result.stdout)
+        self.assertIn('passed', result.stdout)          # and the run is listed
+
     def test_foreign_host_header_is_refused(self):
         # A page on another site that resolves its own name to 127.0.0.1 (DNS rebinding) is turned away.
         self.assertEqual(self.request('GET', '/api/runs', host='evil.example:80')[0], 403)

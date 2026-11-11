@@ -526,7 +526,9 @@ class Supervisor:
             step_env = expr.interpolate(step.get('env') or {}, ctx)
             cond_ctx = {**ctx, 'env': {**ctx['env'], **step_env}} if step_env else ctx
             if step['kind'] == 'skipped' or not expr.condition(step.get('if'), cond_ctx):
-                rec['outcome'] = 'skipped'
+                rec['outcome'] = rec['conclusion'] = 'skipped'
+                if step.get('id'):
+                    ctx['steps'][step['id']] = {'outputs': {}, 'outcome': 'skipped', 'conclusion': 'skipped'}
                 jr['steps_done'] = index
                 continue
             name = self.redact(expr.to_str(expr.interpolate(step['name'], ctx)).encode('utf-8')).decode(
@@ -545,8 +547,11 @@ class Supervisor:
                        finished_at=store.iso(), elapsed_s=round(time.time() - started, 1))
             code = '' if rec['exit_code'] is None else f' (exit {rec["exit_code"]})'
             self.marker(f'step {index} {rec["outcome"]}{code} after {rec["elapsed_s"]}s')
+            # conclusion is the outcome after continue-on-error: a failed step allowed to fail is a success.
+            rec['conclusion'] = 'success' if not ok and step.get('continue_on_error') and                 result.get('outcome') not in ('timed_out', 'cancelled', 'stalled') else rec['outcome']
             ctx['steps'][step.get('id') or f'__{index}'] = {'outputs': result.get('outputs', {}),
-                                                             'outcome': rec['outcome']}
+                                                             'outcome': rec['outcome'],
+                                                             'conclusion': rec['conclusion']}
             extra_env.update(result.get('env', {}))
             extra_path[:0] = list(reversed(result.get('path', [])))  # later additions come first, as on GitHub
             jr['steps_done'] = index
@@ -556,7 +561,6 @@ class Supervisor:
                         'stalled': ('failed', 'stalled')}[result['outcome']]
             if not ok:
                 if step.get('continue_on_error'):
-                    rec['conclusion'] = 'success'
                     continue
                 status = 'failure'
                 failed = failed or {'index': index, 'name': name, 'exit_code': rec['exit_code']}
