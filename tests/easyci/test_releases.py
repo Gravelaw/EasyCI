@@ -210,3 +210,11 @@ class OffloadedExtras(EasyCITest):
         code, doc, _ = self.call('promote', run_id, '--artifact', 'pkg', '--to', self.tmp / 'rel')
         promoted = (pathlib.Path(doc['data']['release']) / 'app.txt').read_text().strip()
         self.assertEqual(downloaded, promoted)
+
+    def test_non_ascii_tracked_data_is_hashed_as_tested(self):
+        # Review finding: git quoted `données.csv`, so it was treated as untracked and hashed from the folder.
+        repo = self.make_repo(None, {'data/données.csv': 'tested\n'}, name='dataset-accents')
+        commit = self.git(repo, 'rev-parse', 'HEAD')
+        (pathlib.Path(repo) / 'data' / 'données.csv').write_text('edited\n')
+        entry = store.data_hashes(repo, ['data'], commit)['data/données.csv']
+        self.assertEqual((entry['source'], entry['sha256']), ('commit', store.digest_bytes(b'tested\n')))
