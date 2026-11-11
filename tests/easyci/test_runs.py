@@ -704,3 +704,20 @@ class JobStatusOutput(EasyCITest):
         code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
         log = (self.run_dir(data['run_id']) / 'jobs/report/log.txt').read_text()
         self.assertIn('build said failure', log)
+
+
+class CacheCrossLinks(EasyCITest):
+    def test_hard_links_across_cached_paths(self):
+        # Review finding: b/f hard-linked to a/f was stored as a link into a's prefix and dropped.
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'a').mkdir(parents=True)
+        (ws / 'b').mkdir()
+        (ws / 'a' / 'f').write_text('shared')
+        os.link(ws / 'a' / 'f', ws / 'b' / 'f')
+        c = cache.NativeCache('cross')
+        self.assertTrue(c.save(ws, ['a', 'b'], 'k'))
+        new = self.tmp / 'new'
+        new.mkdir()
+        self.assertEqual(c.restore(new, ['a', 'b'], 'k', []), ('k', True))
+        self.assertEqual((new / 'b' / 'f').read_text(), 'shared')
