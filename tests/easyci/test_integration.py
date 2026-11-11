@@ -180,6 +180,9 @@ jobs:
         self.assertEqual((jobs['tools']['state'], jobs['tools']['failed_step']['index']), ('failed', 1), jobs['tools'])
         self.assertIn('the job container image docker.io/library/alpine:3.20',
                       (rd / 'jobs/tools/log.txt').read_text(encoding='utf-8'))
+        # Review finding: the version recorded for the job is the image's (none here), not the distro's.
+        self.assertEqual(jobs['tools']['toolchains']['python'],
+                         {'version': None, 'image': 'docker.io/library/alpine:3.20'})
         self.assertEqual(self.containers(run_id), 0, 'containers removed')
 
     def test_on_kill_runs_in_the_container_and_a_dead_supervisor_leaves_no_containers(self):

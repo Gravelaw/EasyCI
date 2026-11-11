@@ -598,6 +598,10 @@ class Supervisor:
                 # The steps run in the job's image, so that is where the toolchain must be.
                 probe = backend.probe_in_container([step['tool']])
                 where = f'the job container image {job["container"]["image"]}'
+                # Recorded on the job (and so in the sealed report): the version this image really has,
+                # not the distro's from run.toolchains.
+                jr.setdefault('toolchains', {})[step['tool']] = {'version': probe.get(step['tool']),
+                                                                 'image': job['container']['image']}
                 problem = toolchain_problem(job, entry, probe, where) if entry else None
             else:
                 probe = self.probes.get(job['backend'], {})

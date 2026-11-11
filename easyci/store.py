@@ -167,7 +167,8 @@ def artifact_dir_name(name):
     """The folder an uploaded artifact is kept in under jobs/<job>/artifacts/. `evidence` there is
     EasyCI's own folder, so an upload of that name gets a suffix normalisation can never produce."""
     folder = re.sub(r'[^A-Za-z0-9._-]', '_', str(name or '') or 'artifact')
-    return folder + '@upload' if folder == 'evidence' else folder
+    # `evidence` and `<name>.pointer.json` are EasyCI's own names in that folder.
+    return folder + '@upload' if folder == 'evidence' or folder.endswith('.pointer.json') else folder
 
 
 def artifact_name(folder):

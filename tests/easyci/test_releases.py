@@ -169,3 +169,15 @@ class OffloadedExtras(EasyCITest):
         code, doc, _ = self.call('verify', run_id)
         self.assertEqual((code, doc['error']['code']), (1, 'TAMPERED'))
         self.assertIn('package.pointer.json:added.txt', doc['error']['message'])
+
+    def test_an_artifact_named_like_a_pointer_does_not_collide(self):
+        # Review finding: `package` (offloaded) and `package.pointer.json` could not both be uploaded.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p dist small && head -c 1500000 /dev/zero > dist/big.bin && echo s > small/s.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package, path: dist}\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package.pointer.json, path: small}\n'
+                    '  use:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: package.pointer.json, path: got}\n'
+                    '      - run: cat got/s.txt\n')
+        repo, run_id = OffloadedExtras.passed_run(self, workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
+        self.assertEqual(self.call('verify', run_id)[0], 0)
