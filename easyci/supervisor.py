@@ -557,6 +557,9 @@ class Supervisor:
                                                              'conclusion': rec['conclusion']}
             extra_env.update(result.get('env', {}))
             extra_path[:0] = list(reversed(result.get('path', [])))  # later additions come first, as on GitHub
+            # Hooks (cleanup, on_kill) see the job's environment including this step's exports.
+            self.step_env = {**base_env, **job_env, **extra_env,
+                             **({'EASYCI_PATH_PREPEND': PATH_SEP[is_wsl].join(extra_path)} if extra_path else {})}
             jr['steps_done'] = index
             if result.get('outcome') in ('timed_out', 'cancelled', 'stalled'):
                 jr['failed_step'] = {'index': index, 'name': name}

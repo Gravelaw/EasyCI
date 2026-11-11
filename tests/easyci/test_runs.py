@@ -317,6 +317,13 @@ class NativeRuns(EasyCITest):
             self.assertIn('wrapped for workflow', log)
             self.assertIn(f'cleanup saw {state}', log)
             self.assertLess(log.index('wrapped for workflow'), log.index('running cleanup'))
+        # Review finding: cleanup sees what the last step exported.
+        last = ('on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
+                '      - run: echo "RESOURCE_ID=resource-123" >> "$GITHUB_ENV"\n')
+        repo = self.make_repo(last, {'easyci.yml': 'jobs:\n  j:\n    cleanup: echo "releasing $RESOURCE_ID"\n'},
+                              name='hooks-last-export')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertIn('releasing resource-123', (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text())
         # A failing setup fails the job before the workflow's steps; cleanup still runs.
         repo = self.make_repo(wf, {'easyci.yml': 'jobs:\n  j:\n    setup: exit 9\n    cleanup: echo released\n'},
                               name='hooks-setup-fails')

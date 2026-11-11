@@ -135,3 +135,11 @@ class Releases(EasyCITest):
         self.assertEqual(code, 0, doc)
         self.assertEqual(doc['data']['metrics'], [{'metric': 'build.accuracy', 'before': 0.91, 'after': 0.95,
                                                    'change': 0.04}])
+
+
+class DataFolders(EasyCITest):
+    def test_folder_patterns_record_every_file(self):
+        # Review finding: `data: [data]` and `data/**` (folders) recorded nothing.
+        repo = self.make_repo(None, {'data/train.csv': 'a\n', 'data/sub/test.csv': 'b\n'}, name='dataset')
+        for patterns in (['data'], ['data/**']):
+            self.assertEqual(sorted(store.data_hashes(repo, patterns)), ['data/sub/test.csv', 'data/train.csv'], patterns)

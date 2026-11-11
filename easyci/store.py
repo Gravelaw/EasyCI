@@ -455,7 +455,10 @@ def data_hashes(repo, patterns):
     contributes the md5 DVC recorded for its output instead of hashing the data again."""
     root, out = pathlib.Path(repo), {}
     for pattern in patterns:
-        for path in sorted(root.glob(str(pattern).replace('\\', '/'))):
+        matched = sorted(root.glob(str(pattern).replace('\\', '/')))
+        # A matched folder (`data`, or what `data/**` yields on Python 3.12) contributes every file in it.
+        files = sorted({f for m in matched for f in ([m] if m.is_file() else m.rglob('*') if m.is_dir() else [])})
+        for path in files:
             if not path.is_file() or path.is_symlink():
                 continue
             rel = path.relative_to(root).as_posix()
