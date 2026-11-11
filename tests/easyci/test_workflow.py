@@ -92,8 +92,17 @@ class Mapping(unittest.TestCase):
         for pattern, path, expected in (('**/*.py', 'main.py', True), ('**/*.py', 'a/b/main.py', True),
                                         ('src/**/*.py', 'src/main.py', True), ('src/**/*.py', 'src/a/main.py', True),
                                         ('src/**/*.py', 'srcx/main.py', False), ('*.py', 'a/main.py', False),
-                                        ('src/**', 'src/a/b', True), ('docs/?.md', 'docs/a.md', True),
-                                        ('docs/?.md', 'docs/ab.md', False), ('a.b', 'aXb', False)):
+                                        ('src/**', 'src/a/b', True), ('a.b', 'aXb', False)):
+            self.assertEqual(workflow.glob_match(pattern, path), expected, (pattern, path))
+
+    def test_github_filter_pattern_syntax(self):
+        # Review finding: GitHub's `?` means "zero or one of the preceding character", `+` "one or
+        # more", and `[...]` is a character class (workflow syntax, filter pattern cheat sheet).
+        for pattern, path, expected in (('*.jsx?', 'page.js', True), ('*.jsx?', 'page.jsx', True),
+                                        ('*.jsx?', 'page.jsxx', False), ('v+.txt', 'vvv.txt', True),
+                                        ('v+.txt', '.txt', False), ('[ab]x', 'ax', True), ('[ab]x', 'cx', False),
+                                        ('[a-c]x', 'bx', True), ('[!a]x', 'bx', True), ('[!a]x', 'ax', False),
+                                        ('releases/[0-9]+.0', 'releases/10.0', True), ('a+b', 'a+b', False)):
             self.assertEqual(workflow.glob_match(pattern, path), expected, (pattern, path))
 
     def test_changed_files_are_read_raw_not_quoted(self):
