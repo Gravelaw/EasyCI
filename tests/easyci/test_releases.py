@@ -193,3 +193,20 @@ class OffloadedExtras(EasyCITest):
             hashes = store.data_hashes(repo, ['data'], self.git(repo, 'rev-parse', 'HEAD'))
         self.assertEqual(hashes['data/big.bin'], {'sha256': store.digest(big), 'size': 3 * 2 ** 20,
                                                   'source': 'working tree'})
+
+    def test_download_and_promote_agree_when_jobs_share_an_artifact_name(self):
+        # Review finding: with only job a's upload offloaded, download gave a's file, promote gave b's.
+        workflow = ('on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p d && head -c 1500000 /dev/zero > d/big.bin && echo from-a > d/app.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: pkg, path: d}\n'
+                    '  b:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p d && echo from-b > d/app.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: pkg, path: d}\n'
+                    '  use:\n    needs: [a, b]\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: pkg, path: got}\n'
+                    '      - run: echo "downloaded $(cat got/app.txt)"\n')
+        repo, run_id = OffloadedExtras.passed_run(self, workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
+        downloaded = (self.run_dir(run_id) / 'jobs/use/log.txt').read_text().split('downloaded ')[-1].split()[0]
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'pkg', '--to', self.tmp / 'rel')
+        promoted = (pathlib.Path(doc['data']['release']) / 'app.txt').read_text().strip()
+        self.assertEqual(downloaded, promoted)
