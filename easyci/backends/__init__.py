@@ -123,9 +123,22 @@ def get(backend_id):
     raise ValueError(f'unknown backend {backend_id}')
 
 
+def remove_leftover_containers(run):
+    """Stop and remove the Podman containers and networks of a run whose supervisor died."""
+    from easyci.backends import podman
+    for backend_id in sorted({str(j.get('backend') or '') for j in run.get('jobs', [])}):
+        if backend_id.startswith('podman:'):
+            podman.Podman(backend_id.partition(':')[2]).remove_containers(run.get('run_id') or '')
+
+
+def is_linux(backend_id):
+    """Backends whose steps run on Linux: wsl:<distro> and podman:<distro> (inside that distro)."""
+    return str(backend_id or '').startswith(('wsl', 'podman:'))
+
+
 def kill_leftover(info):
     """Kill a step process tree recorded in a heartbeat (used by the reaper)."""
-    if info.get('backend', '').startswith('wsl') and info.get('distro'):
+    if is_linux(info.get('backend')) and info.get('distro'):
         from easyci.backends import wsl
         wsl.kill_group(info['distro'], info.get('pgid_file'))
     kill_tree(info.get('pid'))

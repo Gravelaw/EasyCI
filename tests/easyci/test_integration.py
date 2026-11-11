@@ -127,6 +127,79 @@ jobs:
         code, text = wsl.wsl_run(PODMAN, f'podman ps -a --format "{{{{.Names}}}}" | grep -c easyci-{run_id.lower()} || true')
         self.assertEqual(text.strip(), '0', 'containers removed')
 
+    def containers(self, run_id):
+        from easyci.backends import wsl
+        code, text = wsl.wsl_run(PODMAN, f'podman ps -a --format "{{{{.Names}}}}" | grep -c easyci-{run_id.lower()} || true')
+        return int(text.strip() or 0)
+
+    def test_container_jobs_are_linux_jobs_with_hooks_and_toolchains_in_the_image(self):
+        # Review findings: podman jobs were treated as Windows jobs (runner.os, paths, $GITHUB_PATH),
+        # hooks ran after the container was gone, and setup-* steps were checked against the distro.
+        text = """\
+on: push
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: docker.io/library/alpine:3.20
+    steps:
+      - run: mkdir -p sub && echo /opt/a >> "$GITHUB_PATH" && echo /opt/b >> "$GITHUB_PATH"
+      - if: runner.os == 'Linux'
+        working-directory: sub
+        run: echo "os=$RUNNER_OS dir=$(basename "$PWD") path=$PATH"
+  tools:
+    runs-on: ubuntu-latest
+    container: docker.io/library/alpine:3.20
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: echo unreachable
+"""
+        cfg = (f'container_backend: podman:{PODMAN}\njobs:\n  linux:\n'
+               '    cleanup: echo "cleanup-in-alpine-$(cat /etc/alpine-release)"\n')
+        repo = self.make_repo(text, {'easyci.yml': cfg})
+        code, doc, _ = self.call('run', '--repo', repo, '--no-report')
+        run_id = doc['data']['run_id']
+        code, data = self.wait(run_id, timeout=900)
+        jobs = {j['name']: j for j in data['jobs']}
+        rd = store.find_run(run_id)
+        log = (rd / 'jobs/linux/log.txt').read_text(encoding='utf-8')
+        self.assertEqual(jobs['linux']['state'], 'passed', log)
+        self.assertRegex(log, r'os=Linux dir=sub path=/opt/b:/opt/a:')
+        self.assertRegex(log, r'cleanup-in-alpine-3\.20')
+        # The distro has python3; the image does not. The image decides, at the step.
+        self.assertEqual((jobs['tools']['state'], jobs['tools']['failed_step']['index']), ('failed', 1), jobs['tools'])
+        self.assertIn('the job container image docker.io/library/alpine:3.20',
+                      (rd / 'jobs/tools/log.txt').read_text(encoding='utf-8'))
+        self.assertEqual(self.containers(run_id), 0, 'containers removed')
+
+    def test_on_kill_runs_in_the_container_and_a_dead_supervisor_leaves_no_containers(self):
+        text = ('on: push\njobs:\n  slow:\n    runs-on: ubuntu-latest\n    container: docker.io/library/alpine:3.20\n'
+                '    steps:\n      - run: echo started; sleep 600\n')
+        cfg = (f'container_backend: podman:{PODMAN}\njobs:\n  slow:\n'
+               '    on_kill: echo "on_kill-in-alpine-$(cat /etc/alpine-release)"\n')
+        repo = self.make_repo(text, {'easyci.yml': cfg})
+        code, doc, _ = self.call('run', '--repo', repo, '--no-report')
+        run_id = doc['data']['run_id']
+        log = lambda: store.find_run(run_id) / 'jobs/slow/log.txt'  # noqa: E731
+        self.until(lambda: log().exists() and 'started' in log().read_text(encoding='utf-8'), timeout=300)
+        self.call('cancel', run_id)
+        self.wait(run_id)
+        self.assertRegex(log().read_text(encoding='utf-8'), r'on_kill-in-alpine-3\.20')
+        self.assertEqual(self.containers(run_id), 0)
+        # Supervisor killed: the reaper must stop the containers, not only mark the run.
+        repo = self.make_repo(text, {'easyci.yml': f'container_backend: podman:{PODMAN}\n'}, name='orphan')
+        code, doc, _ = self.call('run', '--repo', repo, '--no-report')
+        run_id = doc['data']['run_id']
+        self.until(lambda: log().exists() and 'started' in log().read_text(encoding='utf-8'), timeout=300)
+        self.assertGreater(self.containers(run_id), 0)
+        rd = store.find_run(run_id)
+        import subprocess
+        subprocess.run(['taskkill', '/F', '/PID', str(store.read_json(rd / 'heartbeat.json')['pid'])], capture_output=True)
+        time.sleep(float(os.environ['EASYCI_STALE_S']) + 1.5)
+        code, doc, _ = self.call('status', run_id)
+        self.assertEqual(doc['data']['state'], 'interrupted')
+        self.assertEqual(self.containers(run_id), 0, 'the reaper removed the orphaned containers')
+
     def test_cancel_stops_the_job_container(self):
         text = ('on: push\njobs:\n  slow:\n    runs-on: ubuntu-latest\n    container: docker.io/library/alpine:3.20\n'
                 '    steps:\n      - run: echo started; sleep 600\n')

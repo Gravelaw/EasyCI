@@ -48,6 +48,19 @@ class Releases(EasyCITest):
         code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', releases, '--version', '2')
         self.assertEqual(doc['error']['code'], 'PROMOTE_BUSY')
 
+    def test_an_artifact_receipt_json_is_refused_not_overwritten(self):
+        # Review finding: the release receipt silently replaced a tested receipt.json from the artifact.
+        repo, run_id = self.passed_run(BUILD.replace('> dist/app.txt', '> dist/receipt.json'))
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'rel')
+        self.assertEqual(doc['error']['code'], 'RESERVED_NAME', doc)
+        self.assertEqual(list((self.tmp / 'rel').glob('*')) if (self.tmp / 'rel').exists() else [], [])
+        # In a subfolder it is just another file.
+        repo, run_id = self.passed_run(BUILD.replace('mkdir -p dist && echo "package v1" > dist/app.txt',
+                                                     'mkdir -p dist/meta && echo x > dist/meta/receipt.json'), name='sub')
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'rel')
+        self.assertEqual(code, 0, doc)
+        self.assertEqual(self.call('verify', doc['data']['release'])[0], 0)
+
     def test_only_passed_runs_are_promoted(self):
         failing = BUILD.replace('echo "package v1" > dist/app.txt', 'echo x > dist/app.txt; exit 1')
         repo = self.make_repo(failing, {'easyci.yml': 'backend: native\n'})

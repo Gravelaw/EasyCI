@@ -239,7 +239,7 @@ def resolve_shell(step_shell, defaults, backend, runs_on):
         shell = 'pwsh' if backend == 'native' and 'windows' in runs_on else 'bash'
     if shell not in SHELLS:
         raise Unsupported(f'unsupported_shell:{shell}')
-    if backend.startswith('wsl') and shell in ('pwsh', 'powershell', 'cmd'):
+    if str(backend).startswith(('wsl', 'podman:')) and shell in ('pwsh', 'powershell', 'cmd'):
         raise Unsupported(f'unsupported_shell:{shell} on {backend}')
     return shell
 

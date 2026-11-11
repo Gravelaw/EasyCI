@@ -298,6 +298,10 @@ def mark_interrupted(rd):
                 backends.kill_leftover(beat['child'])
             except Exception as error:  # noqa: BLE001 - best effort, recorded
                 log(f'reaper could not kill leftover {beat["child"]}: {error}')
+        try:  # containers and services outlive the supervisor; stop them before the machine is reused
+            backends.remove_leftover_containers(run)
+        except Exception as error:  # noqa: BLE001
+            log(f'reaper could not remove containers of {rd.name}: {error}')
         if not finished:
             run['state'], run['finished_at'] = 'interrupted', iso()
             run['reason'] = 'supervisor_died'
@@ -444,7 +448,7 @@ def remove_backend_workspaces(rd, run):
     """Remove workspaces kept outside the run directory (WSL jobs work inside the distro, under
     ~/.easyci/work/<run-id>). Best effort: an unavailable distro is logged, never fatal."""
     from easyci import backends
-    for backend_id in sorted({j.get('backend') for j in run.get('jobs', []) if str(j.get('backend', '')).startswith('wsl')}):
+    for backend_id in sorted({j.get('backend') for j in run.get('jobs', []) if backends.is_linux(j.get('backend'))}):
         try:
             backends.get(backend_id).cleanup(rd, run.get('run_id') or rd.name)
         except Exception as error:  # noqa: BLE001

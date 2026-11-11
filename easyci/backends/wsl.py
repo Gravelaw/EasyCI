@@ -94,6 +94,14 @@ class Wsl:
         return f'{self.id}:{text}' if code == 0 else self.id
 
     def probe(self, tools):
+        code, text = wsl_run(self.distro, self.probe_script(tools), timeout=120)
+        found = dict(line.split('=', 1) for line in text.splitlines() if '=' in line) if code == 0 else {}
+        keys = [*tools, 'julia_depot'] if 'julia' in tools else tools
+        return {tool: (found.get(tool) or '').strip() or None for tool in keys}
+
+    @staticmethod
+    def probe_script(tools):
+        """A POSIX sh script printing `tool=<first version line>` for each tool."""
         lines = []
         for tool in tools:
             exe = PROBE_TOOLS.get(tool, tool)
@@ -102,10 +110,7 @@ class Wsl:
                          f'{shlex.quote(exe)} {flag} 2>&1 | grep -m 1 .; else echo; fi')  # first non-empty line (gradle starts blank)
         if 'julia' in tools:
             lines.append('printf "julia_depot=%s\\n" "${JULIA_DEPOT_PATH:-$HOME/.julia}"')
-        code, text = wsl_run(self.distro, '\n'.join(lines), timeout=120)
-        found = dict(line.split('=', 1) for line in text.splitlines() if '=' in line) if code == 0 else {}
-        keys = [*tools, 'julia_depot'] if 'julia' in tools else tools
-        return {tool: (found.get(tool) or '').strip() or None for tool in keys}
+        return '\n'.join(lines)
 
     def to_backend_path(self, win_path):
         return to_linux(win_path)

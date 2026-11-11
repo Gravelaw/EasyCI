@@ -148,18 +148,27 @@ class Podman(Wsl):
         names = sorted(k for k in env if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k))
         exec_env = ' '.join(f'-e {k}' for k in names)
         script_path = shlex.quote(to_linux(f'{job_dir}/steps/{index}.sh'))
+        # $GITHUB_PATH entries (EASYCI_PATH_PREPEND) go in front of the image's own PATH.
+        prepend = 'if [ -n "$EASYCI_PATH_PREPEND" ]; then PATH="$EASYCI_PATH_PREPEND:$PATH"; export PATH; fi; '
         if shell == 'bash':  # as on GitHub: bash when the image has it, otherwise sh
-            run = ("sh -c 'if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -eo pipefail \"$0\"; "
-                   "else exec sh -e \"$0\"; fi' " + script_path)
+            run = ("sh -c '" + prepend + "if command -v bash >/dev/null 2>&1; then "
+                   "exec bash --noprofile --norc -eo pipefail \"$0\"; else exec sh -e \"$0\"; fi' " + script_path)
         else:
-            run = f'sh -e {script_path}'
+            run = "sh -c '" + prepend + "exec sh -e \"$0\"' " + script_path
         wrapped = f'exec podman exec -i {exec_env} -w {shlex.quote(cwd)} {self.container} {run}'
         return super().start(shell, body, env, cwd, job_dir, index, command=wrapped)
 
     def kill(self, proc):
-        if self.container:  # stop everything the step started inside the container
-            self.podman(['kill', self.container], timeout=60)
+        if self.container:  # stop everything the step started inside the container, but keep the
+            # container itself (restarted, mounts intact) so on_kill and cleanup still run in it
+            self.podman(['restart', '-t', '0', self.container], timeout=120)
         super().kill(proc)
+
+    def probe_in_container(self, tools):
+        """Tool versions inside the job container (setup-* steps are checked against the image)."""
+        code, text = self.podman(['exec', self.container, 'sh', '-c', self.probe_script(tools)], timeout=120)
+        found = dict(line.split('=', 1) for line in text.splitlines() if '=' in line) if code == 0 else {}
+        return {tool: (found.get(tool) or '').strip() or None for tool in tools}
 
     def end_job(self):
         super().end_job()
@@ -171,6 +180,9 @@ class Podman(Wsl):
 
     def cleanup(self, rd, run_id):
         super().cleanup(rd, run_id)
+        self.remove_containers(run_id)
+
+    def remove_containers(self, run_id):
         prefix = re.sub(r'[^a-z0-9-]+', '-', f'easyci-{run_id}'.lower())
         wsl_run(self.distro, f'podman ps -aq --filter name=^{prefix} | xargs -r podman rm -f >/dev/null 2>&1; '
                              f'podman network ls -q --filter name=^{prefix} | xargs -r podman network rm -f >/dev/null 2>&1',

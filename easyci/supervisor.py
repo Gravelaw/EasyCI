@@ -44,9 +44,9 @@ def ignore_console_signals():
         ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
 
 
-def toolchain_problem(job, tool, probe):
+def toolchain_problem(job, tool, probe, where=None):
     """(reason, fix) when the backend lacks the requested toolchain, else None."""
-    where = job['backend'].replace('wsl:', 'WSL distro ')
+    where = where or job['backend'].replace('wsl:', 'WSL distro ')
     actual = probe.get(tool['tool'])
     if not actual:
         return (f'toolchain_missing:{tool["tool"]}',
@@ -327,8 +327,8 @@ class Supervisor:
         if missing:
             return 'unsupported', f'missing_env:{missing[0]}', f'Set {missing[0]} before running easyci run.'
         for tool in job['toolchains']:
-            if tool.get('if') not in (None, ''):
-                continue  # a conditional setup step is checked when (and if) it actually runs
+            if tool.get('if') not in (None, '') or job.get('container'):
+                continue  # checked when the step runs: conditional ones only if enabled, container jobs in the image
             problem = toolchain_problem(job, tool, probe)
             if problem:
                 return ('unsupported', *problem)
@@ -396,6 +396,16 @@ class Supervisor:
             self.marker(f'EasyCI error: {error}')
             outcome = outcome or ('failed', f'internal_error:{self.mask(error)[:120]}')
         finally:
+            # Hooks run while the job's container, services and workspace still exist; then everything
+            # the job (and its hooks) left running is stopped.
+            try:
+                if self.kill_reason and job.get('on_kill') and self.step_env is not None:
+                    self.run_on_kill(job, jr, backend, ws, job_dir)
+                if job.get('cleanup') and self.step_env is not None:
+                    self.run_hook(jr, backend, ws, job_dir, 'cleanup', job['cleanup'], job.get('cleanup_minutes') or 10,
+                                  {'EASYCI_JOB_STATE': outcome[0] if outcome else 'failed'})
+            except Exception as error:  # noqa: BLE001 - a hook never stops teardown
+                self.marker(f'hook error: {error}')
             backend.end_job()
             if job.get('services'):
                 try:
@@ -410,11 +420,6 @@ class Supervisor:
                     self.marker(f'cache {"saved" if saved else "not saved (key exists or nothing to store)"}: {key}')
                 except Exception as error:  # noqa: BLE001 - a cache failure never fails the job
                     self.marker(f'cache save failed: {error}')
-        if self.kill_reason and job.get('on_kill') and self.step_env is not None:
-            self.run_on_kill(job, jr, backend, ws, job_dir)
-        if job.get('cleanup') and self.step_env is not None:
-            self.run_hook(jr, backend, ws, job_dir, 'cleanup', job['cleanup'], job.get('cleanup_minutes') or 10,
-                          {'EASYCI_JOB_STATE': outcome[0] if outcome else 'failed'})
         try:
             if job['evidence']:
                 copied = backend.collect(ws, job['evidence'], job_dir / 'artifacts' / 'evidence', layout='workspace')
@@ -468,8 +473,6 @@ class Supervisor:
             code = proc.popen.returncode
         except Exception as error:  # noqa: BLE001 - reported, never fatal
             self.marker(f'{name} error: {error}')
-        finally:
-            backend.end_job()
         elapsed = round(time.time() - started, 1)
         self.scrub_scripts(job_dir)
         jr[name] = {**(record or {}), 'exit_code': code, 'timed_out': timed_out, 'elapsed_s': elapsed}
@@ -483,7 +486,7 @@ class Supervisor:
         self.last_output = time.time()
 
     def run_steps(self, job, jr, backend, ws, job_dir, needs, deadline, record):
-        is_wsl = job['backend'].startswith('wsl')
+        is_wsl = backends.is_linux(job['backend'])  # wsl: and podman: steps run on Linux
         join = posixpath.join if is_wsl else os.path.join
         gh = self.plan['github']
         runner_os = 'Linux' if is_wsl else 'Windows'
@@ -587,9 +590,15 @@ class Supervisor:
             self.marker(f'checked out {self.run["commit"]} (tree {self.run["tree"]})')
             return True, {}
         if kind == 'toolchain':
-            probe = self.probes.get(job['backend'], {})
             entry = next((t for t in job['toolchains'] if t.get('step') == step['index']), None)
-            problem = toolchain_problem(job, entry, probe) if entry and entry.get('if') not in (None, '') else None
+            if job.get('container') and getattr(backend, 'container', None):
+                # The steps run in the job's image, so that is where the toolchain must be.
+                probe = backend.probe_in_container([step['tool']])
+                where = f'the job container image {job["container"]["image"]}'
+                problem = toolchain_problem(job, entry, probe, where) if entry else None
+            else:
+                probe = self.probes.get(job['backend'], {})
+                problem = toolchain_problem(job, entry, probe) if entry and entry.get('if') not in (None, '') else None
             if problem:  # a conditional setup step that is now enabled: enforce it here
                 self.marker(f'{problem[0]}. {problem[1]}')
                 return False, {'exit_code': 1}
