@@ -576,3 +576,30 @@ jobs:
         self.assertEqual(self.final_statuses()['easyci'][0], 'error')
         code, doc, _ = self.call('wait', run['run_id'])
         self.assertEqual(code, 6)
+
+
+class StepConclusions(EasyCITest):
+    def test_steps_context_has_outcome_and_conclusion(self):
+        # Review finding: steps.<id>.conclusion was accepted but always empty.
+        wf = """\
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - id: build
+        run: exit 3
+        continue-on-error: true
+      - id: never
+        if: false
+        run: echo unreachable
+      - run: echo "build=${{ steps.build.outcome }}/${{ steps.build.conclusion }} never=${{ steps.never.conclusion }}"
+      - if: steps.build.conclusion == 'success'
+        run: echo conclusion-gate-passed
+"""
+        repo = self.make_repo(wf)
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual(data['state'], 'passed', data)
+        log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
+        self.assertIn('build=failure/success never=skipped', log)
+        self.assertIn('conclusion-gate-passed', log)

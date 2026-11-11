@@ -345,20 +345,23 @@ def expand_matrix(job, gh):
         combos = []
     combos = [c for c in combos if not any(isinstance(e, dict) and all(expr.equal(c.get(k), v) for k, v in e.items())
                                            for e in exclude)]
+    # GitHub's rule: an include entry is added to every original combination whose matrix values it
+    # does not contradict (an entry with no matrix keys fits them all); it never overwrites an
+    # original value but may overwrite one an earlier entry added. An entry that fits none becomes a
+    # combination of its own; such added combinations are not matched by later entries.
+    added = []
     for entry in include:
         if not isinstance(entry, dict):
             raise Unsupported('unsupported_matrix:include entries must be mappings')
+        original = {k: v for k, v in entry.items() if k in keys}
         matched = False
         for combo in combos:
-            original = {k: v for k, v in entry.items() if k in keys}
             if all(expr.equal(combo.get(k), v) for k, v in original.items()):
-                # extras are added; an entry never overwrites an original matrix value
-                for k, v in entry.items():
-                    if k not in keys and (k not in combo or not original):
-                        combo[k] = v
-                matched = matched or bool(original) or not keys
+                combo.update({k: v for k, v in entry.items() if k not in keys})
+                matched = True
         if not matched:
-            combos.append(dict(entry))
+            added.append(dict(entry))
+    combos += added
     if not combos:
         raise Unsupported('unsupported_matrix:the matrix expands to no jobs')
     if len(combos) > MAX_MATRIX:
@@ -370,9 +373,11 @@ def expand_matrix(job, gh):
                      'max-parallel': strategy.get('max-parallel', len(combos))}) for i, combo in enumerate(combos)]
 
 
-def plan_matrix_jobs(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
+def plan_matrix_jobs(wf_path, wf, jid, job, jcfg, cfg, inp, gh, reserved=None):
     """Plan a job, expanding strategy.matrix into one job per combination (id `build-ubuntu-20`,
-    name `build (ubuntu, 20)`, `group` = the workflow's job id)."""
+    name `build (ubuntu, 20)`, `group` = the workflow's job id). `reserved` holds every job id in
+    the workflows and every id generated so far; a combination never takes one of them."""
+    reserved = set() if reserved is None else reserved
     try:
         expanded = expand_matrix(job, gh) if isinstance(job, dict) else []
     except Unsupported as error:
@@ -381,13 +386,13 @@ def plan_matrix_jobs(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
         return [out]
     if not expanded:
         return [plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh)]
-    out, used = [], set()
+    out = []
     for combo, strategy in expanded:
         values = [expr.to_str(v) for v in combo.values() if not isinstance(v, (dict, list))]
         sub = f'{jid}-' + '-'.join(slug(v) for v in values) if values else f'{jid}-{strategy["job-index"]}'
-        while sub in used:
+        while sub in reserved:
             sub += f'-{strategy["job-index"]}'
-        used.add(sub)
+        reserved.add(sub)
         planned = plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=combo, strategy=strategy)
         planned['id'] = sub
         planned['group'] = jid
@@ -558,6 +563,7 @@ def build_plan(workflows, cfg, inp):
     for path, doc in docs:
         for jid in doc['jobs']:
             seen.setdefault(str(jid), []).append(path)
+    reserved = set(all_ids)  # matrix ids must not collide with any job id or with each other
     for path, doc in docs:
         for jid, job in doc['jobs'].items():
             jid = str(jid)
@@ -565,7 +571,7 @@ def build_plan(workflows, cfg, inp):
                 raise ConfigError(f'job {jid} exists in several workflows ({", ".join(seen[jid])}); '
                                   'pick one with --workflow or a profile workflow:')
             jcfg = (cfg.get('jobs') or {}).get(jid, {})
-            jobs.extend(plan_matrix_jobs(path, doc, jid, job, jcfg, cfg, inp, gh))
+            jobs.extend(plan_matrix_jobs(path, doc, jid, job, jcfg, cfg, inp, gh, reserved))
     ordered = order_jobs(jobs)
     if selection:
         groups = {}
