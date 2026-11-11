@@ -63,9 +63,9 @@ def detect(repo):
                       or (root / 'setup.py').exists(),
                       'extras': extras[:1], 'pytest': 'pytest' in text or (root / 'conftest.py').exists()
                       or (root / 'tests' / 'conftest.py').exists(),
-                      'version': major(read(root / '.python-version'), 2) or
-                      major(re.search(r'requires-python\s*=\s*"[^"]*"', pyproject).group(0)
-                            if re.search(r'requires-python\s*=\s*"[^"]*"', pyproject) else '', 2)})
+                      # .python-version pins a version; requires-python only constrains it.
+                      'version': major(read(root / '.python-version'), 2),
+                      'requires': (re.search(r'requires-python\s*=\s*"([^"]*)"', pyproject) or [None, None])[1]})
     if (root / 'Project.toml').exists():
         manifest = read(root / 'Manifest.toml')
         jv = re.search(r'julia_version\s*=\s*"(\d+\.\d+)', manifest)
@@ -132,6 +132,44 @@ def tool_major(have, tool, digits=1):
     return major(have.get(tool) or '', digits)
 
 
+def version_tuple(text):
+    return tuple(int(x) for x in re.findall(r'\d+', str(text))[:3])
+
+
+def satisfies(version, spec):
+    """Does `3.12` meet a PEP 440 specifier set such as `>=3.11,<3.14` (the common operators)?"""
+    def pad(v):
+        return (v + (0, 0, 0))[:3]
+    have = pad(version_tuple(version))
+    for clause in [c.strip() for c in str(spec).split(',') if c.strip()]:
+        m = re.fullmatch(r'(>=|<=|==|!=|~=|>|<)\s*([\d.*]+)', clause)
+        if not m:
+            return False
+        op, want = m.group(1), m.group(2).rstrip('.*')
+        raw = version_tuple(want)
+        need = pad(raw)
+        if op in ('==', '!='):  # `==3.12` / `==3.12.*` compare the parts given
+            ok = (have[:len(raw)] == raw) == (op == '==')
+        elif op == '~=':
+            ok = have >= need and have[:len(raw) - 1] == raw[:len(raw) - 1]
+        else:
+            ok = {'>=': have >= need, '>': have > need, '<=': have <= need, '<': have < need}[op]
+        if not ok:
+            return False
+    return True
+
+
+def python_for(requires, installed):
+    """The version for setup-python: the installed one when it meets requires-python, else the lowest
+    version the constraint allows (its >=, ~= or == bound)."""
+    if not requires:
+        return installed
+    if installed and satisfies(installed, requires):
+        return installed
+    m = re.search(r'(?:>=|~=|==)\s*(\d+\.\d+)', requires)
+    return m.group(1) if m else installed
+
+
 def job_for(stack, have, linux):
     s, kind = stack, stack['stack']
     steps = ['      - uses: actions/checkout@v4']
@@ -152,7 +190,7 @@ def job_for(stack, have, linux):
         if 'test' in s['scripts']:
             steps.append(f'      - run: {run} test')
     elif kind == 'python':
-        version = s.get('version') or tool_major(have, 'python', 2) or '3.12'
+        version = s.get('version') or python_for(s.get('requires'), tool_major(have, 'python', 2)) or '3.12'
         steps.append(f'      - uses: actions/setup-python@v5\n        with:\n          python-version: "{version}"')
         activate = '. .venv/bin/activate' if linux else '. .venv/Scripts/activate'
         lines = [f'{py} -m venv .venv', activate]
