@@ -3,7 +3,7 @@ import unittest
 
 import ecsupport  # noqa: F401 - puts the repository root on sys.path
 from easyci import workflow
-from easyci.backends.podman import parse_options, parse_ports
+from easyci.backends.podman import object_name, parse_options, parse_ports
 
 INP = {'event': 'push', 'ref_name': 'main', 'default_branch': 'main', 'commit': 'a' * 40, 'base': 'b' * 40,
        'repository': 'o/r'}
@@ -53,6 +53,17 @@ class ContainerPlanning(unittest.TestCase):
                 job = plan(text, {'container_backend': 'podman:boxes'})
                 self.assertEqual(job['predicted_reason'], reason)
 
+    def test_values_known_only_at_run_time_are_refused(self):
+        # Review finding: `${{ needs.x.outputs.y }}` in a service became an empty string at planning.
+        text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    services:\n      db:\n'
+                '        image: postgres:16\n        env: {POSTGRES_DB: "${{ needs.config.outputs.database }}"}\n'
+                '    steps: [{run: x}]\n')
+        job = plan(text, {'container_backend': 'podman:boxes'})
+        self.assertTrue(job['predicted_reason'].startswith('unsupported_container:services.db uses needs'),
+                        job['predicted_reason'])
+        ok = text.replace('${{ needs.config.outputs.database }}', 'db-${{ github.sha }}')
+        self.assertEqual(plan(ok, {'container_backend': 'podman:boxes'})['predicted'], 'run')
+
     def test_option_and_port_parsing(self):
         self.assertEqual(parse_options('--health-cmd "pg_isready -U x" --health-interval=5s'),
                          ['--health-cmd', 'pg_isready -U x', '--health-interval', '5s'])
@@ -64,3 +75,13 @@ class ContainerPlanning(unittest.TestCase):
         self.assertTrue(workflow.BACKEND.match('podman:easyci-containers'))
         with self.assertRaises(workflow.ConfigError):
             workflow.load_config('container_backend: wsl:x\n')
+
+
+class Names(unittest.TestCase):
+    def test_long_names_keep_services_apart(self):
+        # Review finding: truncating to 63 characters gave two services the same container name.
+        base = 'easyci-20261111-194847-ff8b-integration-tests-with-long-name-123456'[:60]
+        a, b = object_name(base, 'redis-primary'), object_name(base, 'redis-secondary')
+        self.assertNotEqual(a, b)
+        self.assertTrue(all(len(n) <= 63 and n.startswith('easyci-20261111-194847-ff8b') for n in (a, b)))
+        self.assertEqual(object_name('easyci-x-y', 'db'), 'easyci-x-y-db')

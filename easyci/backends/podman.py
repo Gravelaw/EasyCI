@@ -51,6 +51,16 @@ def parse_ports(ports):
     return out
 
 
+def object_name(name, suffix):
+    """`<name>-<suffix>` within 63 characters; when that is too long, a hash of the whole keeps names of
+    different services apart (truncating would cut the service id away)."""
+    full = f'{name}-{re.sub(r"[^a-z0-9-]+", "-", str(suffix).lower())}'
+    if len(full) <= 63:
+        return full
+    import hashlib
+    return f'{name[:50]}-{hashlib.sha256(full.encode()).hexdigest()[:12]}'
+
+
 class Podman(Wsl):
     def __init__(self, distro):
         super().__init__(distro)
@@ -83,7 +93,7 @@ class Podman(Wsl):
             raise RuntimeError(f'podman network create failed: {text.strip()[-300:]}')
         context = {}
         for sid, spec in (services or {}).items():
-            cname = f'{name}-{sid}'[:63]
+            cname = object_name(name, sid)
             args = ['run', '-d', '--name', cname, '--network', net, '--network-alias', sid]
             for key, value in (spec.get('env') or {}).items():
                 args += ['-e', f'{key}={value}']
@@ -98,7 +108,7 @@ class Podman(Wsl):
                 self.wait_healthy(cname, sid)
             context[sid] = {'id': cname, 'network': net, 'ports': self.ports(cname)}
         if container:
-            cname = f'{name}-job'[:63]
+            cname = object_name(name, 'job')
             self.mkdirs(ws)
             # Mount the run's work folder, not the workspace itself: checkout deletes and re-creates the
             # workspace, and a bind mount of the old folder would keep pointing at the deleted one.
@@ -156,7 +166,9 @@ class Podman(Wsl):
         else:
             run = "sh -c '" + prepend + "exec sh -e \"$0\"' " + script_path
         wrapped = f'exec podman exec -i {exec_env} -w {shlex.quote(cwd)} {self.container} {run}'
-        return super().start(shell, body, env, cwd, job_dir, index, command=wrapped)
+        # The wrapper itself runs in the distro: give it a folder that exists there (the job folder).
+        # The step's working directory, which may exist only in the image, is applied by `podman exec -w`.
+        return super().start(shell, body, env, to_linux(str(job_dir)), job_dir, index, command=wrapped)
 
     def kill(self, proc):
         if self.container:  # stop everything the step started inside the container, but keep the

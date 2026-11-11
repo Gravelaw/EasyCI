@@ -53,9 +53,12 @@ class Onboarding(EasyCITest):
 
     def test_details_feed_the_template(self):
         node = onboard.detect(self.project('n', PROJECTS['node']))[0]
-        self.assertEqual((node['manager'], node['locked'], node['version']), ('npm', True, '22'))
+        self.assertEqual((node['manager'], node['locked'], node['version'], node['requires']), ('npm', True, None, '>=22'))
         text = onboard.workflow_text([node], PROBES, True)
-        self.assertIn('node-version: 22', text)
+        # Review finding: engines.node is a constraint; the installed Node 26 meets >=22, so it is requested.
+        self.assertIn('node-version: 26', text)
+        self.assertIn('node-version: 20', onboard.workflow_text([{**node, 'requires': '^20'}], PROBES, True))
+        self.assertIn('node-version: 18', onboard.workflow_text([{**node, 'version': '18'}], PROBES, True))  # .nvmrc pins
         self.assertLess(text.index('npm ci'), text.index('npm run lint'))
         self.assertLess(text.index('npm run build'), text.index('npm run test'))
         self.assertIn('corepack enable && pnpm install --frozen-lockfile',
@@ -121,6 +124,47 @@ class Onboarding(EasyCITest):
         # 4. Run again: nothing left to write, and nothing is overwritten.
         code, doc, _ = self.call('setup', '--repo', repo)
         self.assertEqual((code, doc['data']['files']), (0, []))
+
+    def test_pnpm_and_yarn_need_corepack(self):
+        # Review finding: a backend without corepack was chosen although the install step needs it.
+        stacks = [{'stack': 'node', 'manager': 'pnpm'}]
+        probes = [('wsl:no-corepack', lambda tools: {'node': 'v22', 'npm': '10', 'git': 'git 2'}),
+                  ('wsl:full', lambda tools: {'node': 'v22', 'npm': '10', 'git': 'git 2', 'corepack': '0.29'})]
+        self.assertEqual(onboard.choose_backend(stacks, probes)['backend'], 'wsl:full')
+        self.assertEqual(onboard.choose_backend([{'stack': 'node', 'manager': 'npm'}], probes)['backend'],
+                         'wsl:no-corepack')
+
+    def test_commit_never_takes_a_users_own_file(self):
+        # Review finding: an untracked easyci.yml the user wrote was committed because of its name.
+        from ecsupport import GIT_ENV
+        os.environ['EASYCI_FAKE_PROBES'] = json.dumps(PROBES)
+        os.environ.update(GIT_ENV)
+        repo = self.make_repo(None, {'calc.py': 'x = 1\n', 'requirements.txt': ''}, name='mine')
+        (pathlib.Path(repo) / 'easyci.yml').write_text('backend: native\n# mine, not finished\n')
+        code, doc, _ = self.call('setup', '--repo', repo, '--commit')
+        self.assertEqual(code, 0, doc)
+        committed = self.git(repo, 'show', '--name-only', '--format=', 'HEAD').split()
+        self.assertEqual(committed, ['.github/workflows/ci.yml'])
+        self.assertIn('?? easyci.yml', self.git(repo, 'status', '--porcelain'))
+
+    def test_go_directive_is_a_minimum(self):
+        # Review finding: `go 1.21` with Go 1.23 installed requested exactly 1.21, which was then rejected.
+        go = {'stack': 'go', 'version': '1.21'}
+        self.assertIn('go-version: "1.23"', onboard.workflow_text([go], PROBES, True))
+        self.assertIn('go-version: "1.21"', onboard.workflow_text([go], {'go': 'go version go1.20.1'}, True))
+
+    def test_julia_override_only_for_the_starter_job(self):
+        # Review finding: a Julia repo with its own workflow (job `test`) got `jobs: {julia: ...}` in
+        # easyci.yml, which names a job that does not exist, so every run was refused.
+        os.environ['EASYCI_FAKE_PROBES'] = json.dumps(PROBES)
+        own = 'on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
+        repo = self.make_repo(own, {'Project.toml': 'name = "X"\n'}, name='jl-own')
+        code, doc, _ = self.call('setup', '--repo', repo, '--write')
+        self.assertEqual(code, 0, doc)
+        self.assertNotIn('julia:', (pathlib.Path(repo) / 'easyci.yml').read_text())
+        repo = self.make_repo(None, {'Project.toml': 'name = "X"\n'}, name='jl-new')
+        self.call('setup', '--repo', repo, '--write')
+        self.assertIn('julia:', (pathlib.Path(repo) / 'easyci.yml').read_text())
 
     def test_gradle_without_a_wrapper_needs_gradle(self):
         # Review finding: only java and git were probed, so a distro without gradle could be chosen.

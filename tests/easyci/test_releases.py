@@ -74,6 +74,32 @@ class Releases(EasyCITest):
         code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'r')
         self.assertEqual((code, doc['error']['code']), (2, 'NOT_PASSED'))
 
+    def test_a_second_upload_replaces_an_offloaded_file(self):
+        # Review finding: after a big first upload was moved out, a small re-upload of the same file
+        # kept the old pointer, and promote published the obsolete big file.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p dist && head -c 1500000 /dev/zero > dist/app.bin\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package, path: dist}\n'
+                    '      - run: echo small > dist/app.bin\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package, path: dist}\n')
+        repo, run_id = self.passed_run(workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
+        rd = self.run_dir(run_id)
+        self.assertFalse((rd / 'jobs/build/artifacts/package.pointer.json').exists())
+        self.assertEqual(self.call('verify', run_id)[0], 0)
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'rel')
+        self.assertEqual(code, 0, doc)
+        self.assertEqual((pathlib.Path(doc['data']['release']) / 'app.bin').read_text().strip(), 'small')
+
+    def test_pointer_named_files_inside_an_artifact_are_just_content(self):
+        # Review finding: any *.pointer.json was read as EasyCI metadata, so verify crashed or failed.
+        workflow = BUILD.replace('echo "package v1" > dist/app.txt',
+                                 'echo \'["model"]\' > dist/model.pointer.json; mkdir -p dist/x; '
+                                 'echo \'{"files": {"a": "b"}}\' > dist/x/y.pointer.json')
+        repo, run_id = self.passed_run(workflow)
+        self.assertEqual(self.call('verify', run_id)[0], 0)
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'rel')
+        self.assertEqual((code, doc['data']['files']), (0, 2), doc)
+
     def test_big_artifacts_live_outside_the_run_but_stay_verified(self):
         workflow = BUILD.replace('echo "package v1" > dist/app.txt', 'head -c 1500000 /dev/zero > dist/big.bin')
         repo, run_id = self.passed_run(workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
@@ -109,3 +135,61 @@ class Releases(EasyCITest):
         self.assertEqual(code, 0, doc)
         self.assertEqual(doc['data']['metrics'], [{'metric': 'build.accuracy', 'before': 0.91, 'after': 0.95,
                                                    'change': 0.04}])
+
+
+class DataFolders(EasyCITest):
+    def test_folder_patterns_record_every_file(self):
+        # Review finding: `data: [data]` and `data/**` (folders) recorded nothing.
+        repo = self.make_repo(None, {'data/train.csv': 'a\n', 'data/sub/test.csv': 'b\n'}, name='dataset')
+        for patterns in (['data'], ['data/**']):
+            self.assertEqual(sorted(store.data_hashes(repo, patterns)), ['data/sub/test.csv', 'data/train.csv'], patterns)
+
+    def test_tracked_data_is_hashed_as_tested_untracked_from_the_folder(self):
+        # Review finding: tracked data was hashed from the working copy even when it differed from the
+        # commit the job checked out.
+        repo = self.make_repo(None, {'data/train.csv': 'tested\n'}, name='dataset-commit')
+        commit = self.git(repo, 'rev-parse', 'HEAD')
+        (pathlib.Path(repo) / 'data' / 'train.csv').write_text('edited, not committed\n')
+        (pathlib.Path(repo) / 'data' / 'big.parquet').write_text('untracked\n')
+        hashes = store.data_hashes(repo, ['data'], commit)
+        self.assertEqual(hashes['data/train.csv']['sha256'], store.digest_bytes(b'tested\n'))
+        self.assertEqual(hashes['data/train.csv']['source'], 'commit')
+        self.assertEqual(hashes['data/big.parquet']['source'], 'working tree')
+
+
+class OffloadedExtras(EasyCITest):
+    passed_run = Releases.passed_run
+
+    def test_files_added_to_an_offloaded_artifact_are_reported(self):
+        # Review finding: verify only checked the files a pointer listed.
+        workflow = BUILD.replace('echo "package v1" > dist/app.txt', 'head -c 1500000 /dev/zero > dist/big.bin')
+        repo, run_id = self.passed_run(workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
+        pointer = json.loads((self.run_dir(run_id) / 'jobs/build/artifacts/package.pointer.json').read_text())
+        (pathlib.Path(pointer['location']) / 'added.txt').write_text('not tested')
+        code, doc, _ = self.call('verify', run_id)
+        self.assertEqual((code, doc['error']['code']), (1, 'TAMPERED'))
+        self.assertIn('package.pointer.json:added.txt', doc['error']['message'])
+
+    def test_an_artifact_named_like_a_pointer_does_not_collide(self):
+        # Review finding: `package` (offloaded) and `package.pointer.json` could not both be uploaded.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p dist small && head -c 1500000 /dev/zero > dist/big.bin && echo s > small/s.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package, path: dist}\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package.pointer.json, path: small}\n'
+                    '  use:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: package.pointer.json, path: got}\n'
+                    '      - run: cat got/s.txt\n')
+        repo, run_id = OffloadedExtras.passed_run(self, workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
+        self.assertEqual(self.call('verify', run_id)[0], 0)
+
+    def test_untracked_data_is_hashed_without_reading_it_whole(self):
+        # Review finding: a large untracked dataset was read into memory in one piece.
+        from unittest import mock
+        repo = self.make_repo(None, {'README.md': 'x\n'}, name='bigdata')
+        big = pathlib.Path(repo) / 'data' / 'big.bin'
+        big.parent.mkdir()
+        big.write_bytes(b'\0' * (3 * 2 ** 20))
+        with mock.patch.object(pathlib.Path, 'read_bytes', side_effect=MemoryError('whole-file read')):
+            hashes = store.data_hashes(repo, ['data'], self.git(repo, 'rev-parse', 'HEAD'))
+        self.assertEqual(hashes['data/big.bin'], {'sha256': store.digest(big), 'size': 3 * 2 ** 20,
+                                                  'source': 'working tree'})

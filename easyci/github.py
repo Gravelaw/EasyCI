@@ -113,8 +113,9 @@ def post_comment(rd, run):
         if pr.get('state') != 'open' or (pr.get('head') or {}).get('sha') != run['commit']:
             continue
         number = pr['number']
-        existing = [c for c in gh_json(['api', f'repos/{repo}/issues/{number}/comments?per_page=100']) or []
-                    if MARKER in (c.get('body') or '')]
+        # Every page: on a busy PR the EasyCI comment can be past the first 100.
+        pages = gh_json(['api', '--paginate', '--slurp', f'repos/{repo}/issues/{number}/comments?per_page=100']) or []
+        existing = [c for page in pages for c in (page or []) if MARKER in (c.get('body') or '')]
         if existing:
             code, text = gh(['api', '--method', 'PATCH', f'repos/{repo}/issues/comments/{existing[-1]["id"]}',
                              '-f', f'body={body}'])

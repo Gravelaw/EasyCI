@@ -254,7 +254,7 @@ class Supervisor:
             self.run['tree'] = snapshot.make_bundle(repo, commit, base, self.rd / 'source.bundle')
             self.run['bundle_sha256'] = store.digest(self.rd / 'source.bundle')
             if self.plan.get('data'):
-                self.run['data'] = store.data_hashes(repo, self.plan['data'])
+                self.run['data'] = store.data_hashes(repo, self.plan['data'], self.run['commit'])
         except (snapshot.GitError, OSError) as error:
             self.fail_all('failed', f'snapshot_failed:{error}')
             raise Cancelled from None
@@ -557,6 +557,9 @@ class Supervisor:
                                                              'conclusion': rec['conclusion']}
             extra_env.update(result.get('env', {}))
             extra_path[:0] = list(reversed(result.get('path', [])))  # later additions come first, as on GitHub
+            # Hooks (cleanup, on_kill) see the job's environment including this step's exports.
+            self.step_env = {**base_env, **job_env, **extra_env,
+                             **({'EASYCI_PATH_PREPEND': PATH_SEP[is_wsl].join(extra_path)} if extra_path else {})}
             jr['steps_done'] = index
             if result.get('outcome') in ('timed_out', 'cancelled', 'stalled'):
                 jr['failed_step'] = {'index': index, 'name': name}
@@ -568,7 +571,8 @@ class Supervisor:
                 status = 'failure'
                 failed = failed or {'index': index, 'name': name, 'exit_code': rec['exit_code']}
                 jr['failed_step'] = failed
-        ctx.update(status=status, env={**job_env, **extra_env})  # include the last step's exports
+        # Include the last step's exports and its result: a failing final step makes job.status failure.
+        ctx.update(status=status, env={**job_env, **extra_env}, job={**ctx.get('job', {}), 'status': status})
         self.outputs[job['id']] = {k: expr.to_str(expr.interpolate(v, ctx)) for k, v in job['outputs'].items()}
         jr['outputs'] = {k: self.redact(v.encode('utf-8')).decode('utf-8', errors='replace')
                          for k, v in self.outputs[job['id']].items()}
@@ -595,6 +599,10 @@ class Supervisor:
                 # The steps run in the job's image, so that is where the toolchain must be.
                 probe = backend.probe_in_container([step['tool']])
                 where = f'the job container image {job["container"]["image"]}'
+                # Recorded on the job (and so in the sealed report): the version this image really has,
+                # not the distro's from run.toolchains.
+                jr.setdefault('toolchains', {})[step['tool']] = {'version': probe.get(step['tool']),
+                                                                 'image': job['container']['image']}
                 problem = toolchain_problem(job, entry, probe, where) if entry else None
             else:
                 probe = self.probes.get(job['backend'], {})
@@ -615,9 +623,10 @@ class Supervisor:
             with_ = expr.interpolate(step['with'], {**ctx, 'env': {**ctx['env'], **step_env}})
             name = store.artifact_dir_name(with_.get('name') or 'artifact')
             paths = [p for p in str(with_.get('path', '')).splitlines() if p.strip()]
+            self.reclaim_artifact(job_dir, name)
             copied = backend.collect(ws, paths, job_dir / 'artifacts' / name)
             self.marker(f'artifact {name}: {len(copied)} file(s)')
-            if copied:
+            if copied or (job_dir / 'artifacts' / name).is_dir():
                 self.offload_artifact(job_dir, name)
             if not copied and with_.get('if-no-files-found', 'warn') == 'error':
                 self.marker(f'no files found for {paths} (if-no-files-found: error)')
@@ -654,6 +663,20 @@ class Supervisor:
             result['outcome'] = outcome
             return False, result
         return proc.popen.returncode == 0, result
+
+    def reclaim_artifact(self, job_dir, name):
+        """A second upload to an artifact that was moved to the artifact store: bring its files back and
+        drop the pointer, so the new files are added as for any artifact and the whole is sized again.
+        Otherwise the old pointer would win over the newer files at promote time."""
+        pointer = job_dir / 'artifacts' / f'{name}.pointer.json'
+        info = store.read_pointer(pointer)
+        if info is None:
+            return
+        location = pathlib.Path(info['location'])
+        if location.is_dir():
+            shutil.copytree(location, job_dir / 'artifacts' / name, dirs_exist_ok=True)
+            shutil.rmtree(location, ignore_errors=True)
+        store.remove_file(pointer)
 
     def offload_artifact(self, job_dir, name):
         """Move an artifact over artifact_threshold_mb out of the run folder into the artifact store
@@ -692,6 +715,13 @@ class Supervisor:
         if not key:
             self.marker('cache key is empty after evaluation; skipping the cache')
             return True, {'outputs': {'cache-hit': 'false'}}
+        if getattr(backend, 'container', None):
+            # The cache store lives in the distro, not in the job's image; a hit there would not put the
+            # files in the container. Always a miss (install steps run), never saved.
+            self.marker(f'cache not used inside a job container; treated as a miss: {key}')
+            if str(with_.get('fail-on-cache-miss', 'false')).lower() == 'true' and step['variant'] != 'save':
+                return False, {'exit_code': 1, 'outputs': {'cache-hit': 'false'}}
+            return True, {'outputs': {'cache-hit': 'false', 'cache-primary-key': key, 'cache-matched-key': ''}}
         store_ = backend.cache(self.run['project'])
         if step['variant'] == 'save':
             saved = store_.save(ws, paths, key)
@@ -714,8 +744,9 @@ class Supervisor:
             return False, {'exit_code': 1}
         roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
         for pointer in sorted((self.rd / 'jobs').glob('*/artifacts/*.pointer.json')):  # offloaded big artifacts
-            location = pathlib.Path((store.read_json(pointer) or {}).get('location', ''))
-            if location.is_dir():
+            info = store.read_pointer(pointer)
+            location = pathlib.Path(info['location']) if info else None
+            if location and location.is_dir():
                 roots.append(location)
         chosen = [p for p in roots if p.name == store.artifact_dir_name(name)] if name else roots
         if name and not chosen:

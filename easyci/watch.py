@@ -43,11 +43,17 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
     if not me and not all_authors:  # never fall back to running everyone's code
         raise cli.Fail(3, 'GH_FAILED', 'Could not find out which GitHub user you are, so EasyCI cannot tell your '
                        "pull requests from other people's.", 'Run: gh auth status (or pass --all-authors on purpose)')
-    pulls = github.gh_json(['api', f'repos/{remote}/pulls?state=open&per_page=100'])
+    # Every page: a repository can have more than 100 open pull requests.
+    pages = github.gh_json(['api', '--paginate', '--slurp', f'repos/{remote}/pulls?state=open&per_page=100'])
+    pulls = None if pages is None else [pr for page in pages for pr in (page or [])]
     if pulls is None:
         raise cli.Fail(3, 'GH_FAILED', 'Could not list pull requests with gh.', 'Run: gh auth status')
     slug = store.project_slug(repo)
-    seen = store.read_json(state_path(slug)) or {}
+    state = store.read_json(state_path(slug)) or {}
+    if isinstance(state.get('seen'), dict):
+        seen, filtered = state['seen'], state.get('filtered') or {}
+    else:  # the earlier flat {pr: sha} form
+        seen, filtered = {k: v for k, v in state.items() if isinstance(v, str)}, {}
     out = []
     for pr in sorted(pulls, key=lambda p: p.get('number', 0)):
         head, base = pr.get('head') or {}, pr.get('base') or {}
@@ -59,8 +65,11 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
             seen[number] = sha
             continue
         if not all_authors and (pr.get('user') or {}).get('login') != me:
-            out.append({'pr': int(number), 'sha': sha, 'skipped': f'opened by {pr["user"]["login"]}, not you'})
-            seen[number] = sha
+            # Remembered apart from `seen`, with the account: --all-authors or another login runs it later.
+            mark = f'{sha}@{me}'
+            if filtered.get(number) != mark:
+                out.append({'pr': int(number), 'sha': sha, 'skipped': f'opened by {pr["user"]["login"]}, not you'})
+                filtered[number] = mark
             continue
         if not ensure_commit(repo, sha, head.get('ref')):
             out.append({'pr': int(number), 'sha': sha, 'skipped': 'head commit could not be fetched'})
@@ -69,7 +78,8 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
             out.append({'pr': int(number), 'sha': sha, 'skipped': 'base commit could not be fetched'})
             continue
         # The commit pins what runs; the branch name feeds github.head_ref, as on GitHub.
-        ns = argparse.Namespace(repo=str(repo), commit=sha, ref=head.get('ref'), base=base.get('sha'), event='pull_request',
+        ns = argparse.Namespace(repo=str(repo), commit=sha, ref=head.get('ref'), base=base.get('sha'),
+                                base_ref=base.get('ref'), event='pull_request',
                                 profile=profile, job=None, workflow=None, backend=None, config=config, wait=False,
                                 no_queue=False, no_report=no_report, keep=False, json=True)
         try:
@@ -83,9 +93,10 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
                 seen[number] = sha
             out.append(item)
     open_numbers = {str(p.get('number')) for p in pulls}
-    seen = {k: v for k, v in seen.items() if k in open_numbers}  # forget closed pull requests
+    state = {'seen': {k: v for k, v in seen.items() if k in open_numbers},  # forget closed pull requests
+             'filtered': {k: v for k, v in filtered.items() if k in open_numbers}}
     state_path(slug).parent.mkdir(parents=True, exist_ok=True)
-    store.write_json(state_path(slug), seen)
+    store.write_json(state_path(slug), state)
     return out
 
 
@@ -95,8 +106,19 @@ def sentence(item):
     return f'PR #{item["pr"]} ({item["sha"][:7]}) not run: {item["skipped"]}.'
 
 
-def loop(repo, interval_minutes, say, **kwargs):
-    while True:
-        for item in cycle(repo, **kwargs):
-            say(sentence(item))
-        time.sleep(max(60.0, interval_minutes * 60))
+def loop(repo, interval_minutes, say, cycles=None, sleep=time.sleep, **kwargs):
+    """Check every interval. A GitHub failure (network down, gh timing out) is reported and the next
+    check happens as usual; it never relaxes the author checks, since nothing runs in a failed cycle."""
+    from easyci import cli
+    done = 0
+    while cycles is None or done < cycles:
+        try:
+            for item in cycle(repo, **kwargs):
+                say(sentence(item))
+        except cli.Fail as error:
+            if error.code != 'GH_FAILED':
+                raise
+            say(f'GitHub could not be reached ({error.message}); trying again in {interval_minutes:g} minutes.')
+        done += 1
+        if cycles is None or done < cycles:
+            sleep(max(60.0, interval_minutes * 60))

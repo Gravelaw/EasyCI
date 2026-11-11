@@ -317,6 +317,13 @@ class NativeRuns(EasyCITest):
             self.assertIn('wrapped for workflow', log)
             self.assertIn(f'cleanup saw {state}', log)
             self.assertLess(log.index('wrapped for workflow'), log.index('running cleanup'))
+        # Review finding: cleanup sees what the last step exported.
+        last = ('on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
+                '      - run: echo "RESOURCE_ID=resource-123" >> "$GITHUB_ENV"\n')
+        repo = self.make_repo(last, {'easyci.yml': 'jobs:\n  j:\n    cleanup: echo "releasing $RESOURCE_ID"\n'},
+                              name='hooks-last-export')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertIn('releasing resource-123', (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text())
         # A failing setup fails the job before the workflow's steps; cleanup still runs.
         repo = self.make_repo(wf, {'easyci.yml': 'jobs:\n  j:\n    setup: exit 9\n    cleanup: echo released\n'},
                               name='hooks-setup-fails')
@@ -708,6 +715,9 @@ class Caches(EasyCITest):
         c = cache.NativeCache('proj')
         exercise_cache(self, c, ws, write, lambda rel: (ws / rel).read_text(), link=lambda a, b: os.link(ws / a, ws / b))
         self.assertEqual(sorted(p.name for p in (self.tmp / 'new' / 'linked').iterdir()), ['a.txt', 'b.txt'])
+        # Review finding: restoring over the original folder, where the hard links already are, must work.
+        self.assertEqual(c.restore(ws, ['linked'], 'k2', []), ('k2', True))
+        self.assertEqual((ws / 'linked' / 'b.txt').read_text(), 'shared')
         self.assertEqual((self.tmp / 'new' / 'linked' / 'b.txt').read_text(), 'shared')
 
 
@@ -728,3 +738,63 @@ class ArtifactNames(EasyCITest):
         self.assertEqual((code, data['state']), (0, 'passed'), data)
         log = (self.run_dir(data['run_id']) / 'jobs/use/log.txt').read_text()
         self.assertEqual(log.count('payload'), 4, log)
+
+
+class CacheLinks(EasyCITest):
+    def test_symlinks_in_a_native_cache_come_back(self):
+        # Review finding: symbolic links in a cached folder were silently dropped on restore.
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'deps' / 'bin').mkdir(parents=True)
+        (ws / 'deps' / 'tool.txt').write_text('real')
+        try:
+            os.symlink('../tool.txt', ws / 'deps' / 'bin' / 'tool')
+        except OSError:
+            self.skipTest('this Windows account cannot create symbolic links')
+        c = cache.NativeCache('links')
+        self.assertTrue(c.save(ws, ['deps'], 'k'))
+        new = self.tmp / 'new'
+        new.mkdir()
+        self.assertEqual(c.restore(new, ['deps'], 'k', []), ('k', True))
+        self.assertEqual((new / 'deps' / 'bin' / 'tool').read_text(), 'real')
+        # Review finding: restoring over the original folder (the link already there) must not fail.
+        self.assertEqual(c.restore(ws, ['deps'], 'k', []), ('k', True))
+        self.assertEqual(c.restore(new, ['deps'], 'k', []), ('k', True))
+        self.assertTrue((new / 'deps' / 'bin' / 'tool').is_symlink())
+        # Without permission to create links, a link inside the folder becomes a copy.
+        from unittest import mock
+        other = self.tmp / 'other'
+        other.mkdir()
+        with mock.patch.object(cache.os, 'symlink', side_effect=OSError('not permitted')):
+            c.restore(other, ['deps'], 'k', [])
+        self.assertEqual((other / 'deps' / 'bin' / 'tool').read_text(), 'real')
+        self.assertFalse((other / 'deps' / 'bin' / 'tool').is_symlink())
+
+
+class JobStatusOutput(EasyCITest):
+    def test_job_status_output_after_a_failing_last_step(self):
+        # Review finding: an output `${{ job.status }}` said success although the last step failed.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    outputs:\n'
+                    '      result: ${{ job.status }}\n    steps:\n      - run: exit 1\n'
+                    '  report:\n    needs: build\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: echo "build said ${{ needs.build.outputs.result }}"\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        log = (self.run_dir(data['run_id']) / 'jobs/report/log.txt').read_text()
+        self.assertIn('build said failure', log)
+
+
+class CacheCrossLinks(EasyCITest):
+    def test_hard_links_across_cached_paths(self):
+        # Review finding: b/f hard-linked to a/f was stored as a link into a's prefix and dropped.
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'a').mkdir(parents=True)
+        (ws / 'b').mkdir()
+        (ws / 'a' / 'f').write_text('shared')
+        os.link(ws / 'a' / 'f', ws / 'b' / 'f')
+        c = cache.NativeCache('cross')
+        self.assertTrue(c.save(ws, ['a', 'b'], 'k'))
+        new = self.tmp / 'new'
+        new.mkdir()
+        self.assertEqual(c.restore(new, ['a', 'b'], 'k', []), ('k', True))
+        self.assertEqual((new / 'b' / 'f').read_text(), 'shared')

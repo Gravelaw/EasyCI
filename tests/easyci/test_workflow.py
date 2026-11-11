@@ -58,7 +58,9 @@ class JuliaFlowImport(unittest.TestCase):
             self.assertTrue(j[name]['reported'])
             self.assertEqual(j[name]['backend'], 'native')
             self.assertEqual(len(j[name]['steps']), 1)
-            self.assertIn(f'--job {name} --cache cold', j[name]['steps'][0]['run'])
+            # warm by default; the -cold profiles switch it (EASYCI_PROFILE is set for every step)
+            self.assertIn(f'--job {name} --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"',
+                          j[name]['steps'][0]['run'])
             self.assertEqual(j[name]['toolchains'], [])
         self.assertEqual(j['debian-release-gate']['timeout_minutes'], 180)
         self.assertEqual(j['julia']['stall_minutes'], 45)
@@ -277,6 +279,13 @@ jobs:
         self.assertEqual([c for c, _ in workflow.expand_matrix(job, {})],
                          [{'os': 'ubuntu', 'color': 'green'}, {'os': 'windows', 'color': 'green'}])
 
+    def test_object_values_match_by_content(self):
+        # Review finding: object-valued axes compared by identity, so exclude/include never matched.
+        job = {'strategy': {'matrix': {'node': [{'version': 20}, {'version': 22}],
+                                       'exclude': [{'node': {'version': 20}}],
+                                       'include': [{'node': {'version': 22}, 'lts': True}]}}}
+        self.assertEqual([c for c, _ in workflow.expand_matrix(job, {})], [{'node': {'version': 22}, 'lts': True}])
+
     def test_matrix_ids_never_collide_with_other_jobs(self):
         # Review finding: matrix `t` with v: [1, 2] next to an ordinary job `t-1`.
         text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: {v: [1, 2]}\n'
@@ -305,6 +314,15 @@ jobs:
         jobs = {j['id']: j for j in self.plan(text, default_backend='fake')['jobs']}
         self.assertEqual(jobs['t-windows-latest']['steps'][0]['shell'], 'pwsh')
         self.assertEqual(jobs['t-ubuntu-latest']['steps'][0]['shell'], 'bash')
+
+    def test_setup_versions_from_the_matrix(self):
+        # Review finding: `node-version: ${{ matrix.node }}` made every combination unsupported.
+        text = ('on: push' + chr(10) + 'jobs:' + chr(10) + '  t:' + chr(10) + '    runs-on: ubuntu-latest' + chr(10) +
+                '    strategy: {matrix: {node: [20, 22]}}' + chr(10) + '    steps:' + chr(10) +
+                '      - uses: actions/setup-node@v4' + chr(10) + '        with: {node-version: "${{ matrix.node }}"}' + chr(10))
+        jobs = self.plan(text, default_backend='fake')['jobs']
+        self.assertEqual([(j['id'], j['predicted'], j['toolchains'][0]['requested']) for j in jobs],
+                         [('t-20', 'run', '20'), ('t-22', 'run', '22')])
 
     def test_matrix_from_needs_outputs_is_unsupported(self):
         text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n'
@@ -347,3 +365,12 @@ class ServicesAndEnv(unittest.TestCase):
         native = self.plan('jobs:\n  db:\n    services: {postgres: {}}\n', backend='native')['jobs'][0]
         self.assertEqual(native['predicted'], 'unsupported')
         self.assertEqual(native['predicted_reason'], 'unsupported_services:postgres needs a wsl backend')
+
+
+class RefContext(unittest.TestCase):
+    def test_tag_refs_are_tags(self):
+        # Review finding: --ref refs/tags/v1 reported github.ref_type branch.
+        g = workflow.github_context({'ref_name': 'refs/tags/v1', 'commit': 'c' * 40, 'event': 'push', 'base': 'b'})
+        self.assertEqual((g['ref'], g['ref_name'], g['ref_type']), ('refs/tags/v1', 'v1', 'tag'))
+        g = workflow.github_context({'ref_name': 'main', 'commit': 'c' * 40, 'event': 'push', 'base': 'b'})
+        self.assertEqual((g['ref'], g['ref_name'], g['ref_type']), ('refs/heads/main', 'main', 'branch'))

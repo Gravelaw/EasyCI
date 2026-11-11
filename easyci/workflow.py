@@ -1,5 +1,6 @@
 """Importer: .github/workflows/*.yml plus optional easyci.yml -> an ordered, honest plan."""
 import fnmatch
+import json
 import re
 
 import yaml
@@ -203,7 +204,7 @@ def applies(doc, path, inp):
     if event not in trig:
         return False, f'not triggered by {event}'
     filt, notes = trig[event], []
-    branch = inp['ref_name'] if event == 'push' else inp['default_branch']
+    branch = inp['ref_name'] if event == 'push' else (inp.get('base_ref') or inp['default_branch'])
     if event == 'push' and ('tags' in filt or 'tags-ignore' in filt) and not ('branches' in filt or 'branches-ignore' in filt):
         return False, 'push filter only matches tags'
     if 'branches' in filt and not filter_match(filt['branches'], branch):
@@ -224,15 +225,20 @@ def applies(doc, path, inp):
 def github_context(inp):
     ref_name = inp['ref_name']
     repository, default = inp.get('repository') or '', inp.get('default_branch') or ''
-    gh = {'sha': inp['commit'], 'ref': ref_name if ref_name.startswith('refs/') else f'refs/heads/{ref_name}',
-          'ref_name': ref_name, 'ref_type': 'branch', 'repository': repository,
+    ref = ref_name if ref_name.startswith('refs/') else f'refs/heads/{ref_name}'
+    # As on GitHub: refs/tags/v1 is ref_type tag with ref_name v1; refs/heads/x is branch x.
+    ref_type = 'tag' if ref.startswith('refs/tags/') else 'branch'
+    short = ref.split('/', 2)[2] if ref.startswith(('refs/tags/', 'refs/heads/')) else ref_name
+    gh = {'sha': inp['commit'], 'ref': ref,
+          'ref_name': short, 'ref_type': ref_type, 'repository': repository,
           'repository_owner': repository.split('/')[0] if '/' in repository else '', 'event_name': inp['event'],
           'server_url': 'https://github.com', 'head_ref': '', 'base_ref': '',
           'event': {'repository': {'default_branch': default}}}
     if inp['event'] == 'pull_request':
-        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base']}}
+        target = inp.get('base_ref') or default  # the branch the pull request targets
+        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base'], 'ref': target}}
         gh['head_ref'] = '' if re.fullmatch(r'[0-9a-f]{40}', ref_name) else ref_name
-        gh['base_ref'] = default
+        gh['base_ref'] = target
     return gh
 
 
@@ -325,6 +331,9 @@ def plan_step(index, step, ctx):
         if any(k.endswith('-file') for k in with_):
             raise Unsupported(f'toolchain_spec_unsupported:{tool} version file')
         requested = with_.get(key)
+        if isinstance(requested, str) and '${{' in requested:  # e.g. node-version: ${{ matrix.node }}
+            requested = expr.to_str(expr.interpolate(requested, {'github': ctx['github'], 'matrix': ctx.get('matrix') or {},
+                                                                 'strategy': ctx.get('strategy') or {}}))
         if requested is not None:
             version_spec(requested, tool)
         out.update(kind='toolchain', tool=tool, requested=None if requested is None else str(requested),
@@ -366,6 +375,13 @@ def plan_containers(job, ctx):
         extra = set(value) - {'image', 'env', 'ports', 'options'}
         if extra:
             raise Unsupported(f'unsupported_container:{where}.{sorted(extra)[0]}')
+        # Containers start before any step runs, so only github, matrix and strategy are known; a value
+        # from needs/env/steps/... would silently become empty. Say so instead.
+        for found in re.findall(r'\$\{\{(.*?)\}\}', json.dumps(value)):
+            late = re.findall(r'\b(needs|env|steps|secrets|vars|inputs|job|runner)\.', found)
+            if late:
+                raise Unsupported(f'unsupported_container:{where} uses {late[0]} (only github and matrix are known '
+                                  'when containers start)')
         value = expr.interpolate(dict(value), ctx)
         try:
             parse_options(value.get('options'))
@@ -417,7 +433,7 @@ def expand_matrix(job, gh):
         combos = [{**c, key: v} for c in combos for v in matrix[key]]
     if not keys:
         combos = []
-    combos = [c for c in combos if not any(isinstance(e, dict) and all(expr.equal(c.get(k), v) for k, v in e.items())
+    combos = [c for c in combos if not any(isinstance(e, dict) and all(matrix_equal(c.get(k), v) for k, v in e.items())
                                            for e in exclude)]
     # GitHub's rule: an include entry is added to every original combination whose matrix values it
     # does not contradict (an entry with no matrix keys fits them all); it never overwrites an
@@ -430,7 +446,7 @@ def expand_matrix(job, gh):
         original = {k: v for k, v in entry.items() if k in keys}
         matched = False
         for combo in combos:
-            if all(expr.equal(combo.get(k), v) for k, v in original.items()):
+            if all(matrix_equal(combo.get(k), v) for k, v in original.items()):
                 combo.update({k: v for k, v in entry.items() if k not in keys})
                 matched = True
         if not matched:
@@ -445,6 +461,14 @@ def expand_matrix(job, gh):
         raise Unsupported('unsupported_matrix:fail-fast must be true or false')
     return [(combo, {'job-index': i, 'job-total': len(combos), 'fail-fast': fail_fast,
                      'max-parallel': strategy.get('max-parallel', len(combos))}) for i, combo in enumerate(combos)]
+
+
+def matrix_equal(a, b):
+    """Matrix values compare by content: objects and lists structurally (two `{version: 20}` from
+    different places are the same entry), scalars with the expression language's loose equality."""
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return a == b
+    return expr.equal(a, b)
 
 
 def plan_matrix_jobs(wf_path, wf, jid, job, jcfg, cfg, inp, gh, reserved=None):
@@ -560,7 +584,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
     defaults = {**((wf.get('defaults') or {}).get('run') or {}), **((job.get('defaults') or {}).get('run') or {})}
     skip_steps = jcfg.get('skip_steps', [])
     # The resolved runner (a matrix `runs-on: ${{ matrix.os }}` is already filled in) picks the default shell.
-    ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(out['runs_on']), 'github': gh}
+    ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(out['runs_on']), 'github': gh,
+           'matrix': matrix or {}, 'strategy': strategy or {}}
     for index, step in enumerate(job.get('steps') or [], 1):
         if not isinstance(step, dict):
             raise ConfigError(f'{wf_path}: job {jid} step {index} must be a mapping')

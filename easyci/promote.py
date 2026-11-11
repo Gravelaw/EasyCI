@@ -36,8 +36,8 @@ def artifact_files(rd, name):
             if rel.startswith(prefix):
                 found[rel[len(prefix):]] = (rd / rel, sha)
         pointer = job_dir / 'artifacts' / f'{name}.pointer.json'
-        if f'jobs/{job_dir.name}/artifacts/{name}.pointer.json' in inventory and pointer.exists():
-            info = store.read_json(pointer) or {}
+        info = store.read_pointer(pointer) if f'jobs/{job_dir.name}/artifacts/{name}.pointer.json' in inventory else None
+        if info:
             for rel, sha in (info.get('files') or {}).items():
                 found[rel] = (pathlib.Path(info['location']) / rel, sha)
     return found
