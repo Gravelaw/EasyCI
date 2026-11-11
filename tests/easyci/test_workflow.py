@@ -58,7 +58,9 @@ class JuliaFlowImport(unittest.TestCase):
             self.assertTrue(j[name]['reported'])
             self.assertEqual(j[name]['backend'], 'native')
             self.assertEqual(len(j[name]['steps']), 1)
-            self.assertIn(f'--job {name} --cache cold', j[name]['steps'][0]['run'])
+            # warm by default; the -cold profiles switch it (EASYCI_PROFILE is set for every step)
+            self.assertIn(f'--job {name} --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"',
+                          j[name]['steps'][0]['run'])
             self.assertEqual(j[name]['toolchains'], [])
         self.assertEqual(j['debian-release-gate']['timeout_minutes'], 180)
         self.assertEqual(j['julia']['stall_minutes'], 45)
