@@ -30,14 +30,34 @@ def projects():
     return out
 
 
+_REAP = {'lock': threading.Lock(), 'last': 0.0}
+
+
+def reap_now(every_s=5.0):
+    """Run the orphan reaper (as every CLI command does) at most every few seconds, one request at a
+    time, so a run whose supervisor died shows as interrupted while only the dashboard is open."""
+    import time
+    from easyci import cli
+    if not _REAP['lock'].acquire(blocking=False):
+        return
+    try:
+        if time.monotonic() - _REAP['last'] >= every_s:
+            cli.safe_reap()
+            _REAP['last'] = time.monotonic()
+    finally:
+        _REAP['lock'].release()
+
+
 def run_list(limit=30):
     from easyci import cli
+    reap_now()
     dirs = sorted(store.run_dirs(), key=lambda p: p.name, reverse=True)[:limit]
     return [cli.view(rd) for rd in dirs]
 
 
 def run_detail(run_id, tail=200):
     from easyci import cli
+    reap_now()
     rd = store.find_run(run_id)
     if not rd:
         return None

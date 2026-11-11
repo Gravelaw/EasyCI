@@ -28,6 +28,7 @@ class PromoteError(Exception):
 def artifact_files(rd, name):
     """{relative path: (absolute path, sealed sha256)} for an artifact of a run, from the seal."""
     inventory = (store.read_json(rd / 'sha256.json') or {}).get('files', {})
+    name = store.artifact_dir_name(name)  # the folder upload-artifact used for this name
     found = {}
     for job_dir in sorted((rd / 'jobs').glob('*')):
         prefix = f'jobs/{job_dir.name}/artifacts/{name}/'

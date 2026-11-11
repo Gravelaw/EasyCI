@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import shlex
+import shutil
 import tarfile
 import time
 
@@ -21,8 +22,10 @@ from easyci import store
 DEFAULT_LIMIT_GB = 10
 
 
-def entry_name(key):
-    return hashlib.sha256(key.encode('utf-8')).hexdigest()[:32]
+def entry_name(key, paths):
+    """An entry is its key *and* its paths, as GitHub's cache version is: the same key with other paths
+    is a different entry, never an exact hit that restores nothing."""
+    return hashlib.sha256('\n'.join([key, *paths]).encode('utf-8')).hexdigest()[:32]
 
 
 def split_lines(value):
@@ -42,8 +45,10 @@ def limit_bytes():
     return int(gb * 2 ** 30)
 
 
-def pick(entries, key, restore_keys):
-    """entries: [{'key', 'created'}]. The exact key wins, else the newest entry per prefix in order."""
+def pick(entries, key, restore_keys, paths):
+    """entries: [{'key', 'paths', 'created'}]. Only entries saved for the same paths count; the exact key
+    wins, else the newest entry per prefix in order."""
+    entries = [e for e in entries if list(e.get('paths') or []) == list(paths)]
     for entry in entries:
         if entry['key'] == key:
             return entry, True
@@ -73,7 +78,7 @@ class NativeCache:
         return pathlib.Path(path) if os.path.isabs(path) else pathlib.Path(ws) / path
 
     def restore(self, ws, paths, key, restore_keys):
-        entry, exact = pick(self.entries(), key, restore_keys)
+        entry, exact = pick(self.entries(), key, restore_keys, paths)
         if not entry:
             return None, False
         archive = self.dir / f'{entry["name"]}.tar'
@@ -93,11 +98,17 @@ class NativeCache:
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         with tar.extractfile(member) as src, open(dest, 'wb') as out:
                             out.write(src.read())
+                    elif member.islnk() and (member.linkname == prefix or member.linkname.startswith(prefix + '/')):
+                        # a hard link to a file stored earlier in this path: restore it as a copy
+                        source = target / member.linkname[len(prefix):].lstrip('/')
+                        if source.is_file():
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copyfile(source, dest)
         os.utime(archive)  # recently used entries survive pruning
         return entry['key'], exact
 
     def save(self, ws, paths, key):
-        name = entry_name(key)
+        name = entry_name(key, paths)
         if (self.dir / f'{name}.json').exists():
             return False
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +176,7 @@ class WslCache:
         return out
 
     def restore(self, ws, paths, key, restore_keys):
-        entry, exact = pick(self.entries(), key, restore_keys)
+        entry, exact = pick(self.entries(), key, restore_keys, paths)
         if not entry:
             return None, False
         q = shlex.quote
@@ -173,9 +184,10 @@ class WslCache:
         for i, path in enumerate(entry['paths']):
             if path in paths:
                 target = self.resolve(ws, path)
-                lines.append(f'if [ -e "$tmp/p{i}" ]; then mkdir -p {q(target)}; '
-                             f'if [ -d "$tmp/p{i}" ]; then cp -a "$tmp/p{i}/." {q(target)}/; '
-                             f'else rmdir {q(target)}; cp -a "$tmp/p{i}" {q(target)}; fi; fi')
+                # A directory is merged into the target; a single file only needs its parent folder.
+                lines.append(f'if [ -d "$tmp/p{i}" ]; then mkdir -p {q(target)}; cp -a "$tmp/p{i}/." {q(target)}/; '
+                             f'elif [ -e "$tmp/p{i}" ]; then mkdir -p "$(dirname {q(target)})"; '
+                             f'cp -a "$tmp/p{i}" {q(target)}; fi')
         lines += ['rm -rf "$tmp"', f'touch {q(self.dir)}/{entry["name"]}.tar']
         code, text = self.run('\n'.join(lines))
         if code != 0:
@@ -183,7 +195,7 @@ class WslCache:
         return entry['key'], exact
 
     def save(self, ws, paths, key):
-        q, name = shlex.quote, entry_name(key)
+        q, name = shlex.quote, entry_name(key, paths)
         record = json.dumps({'key': key, 'paths': list(paths), 'created': time.time()})
         links = ' '.join(f'[ -e {q(self.resolve(ws, p))} ] && ln -s {q(self.resolve(ws, p))} "$stage/p{i}";'
                          for i, p in enumerate(paths))

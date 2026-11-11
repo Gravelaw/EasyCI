@@ -162,6 +162,16 @@ def read_config(args, repo, commit):
     return cfg, {'source': source, 'sha256': store.digest_bytes(data)}
 
 
+def changed_paths(repo, event, base, commit):
+    """Files a workflow's paths filters see. For a pull request GitHub compares from the merge base
+    of the target and the head (the PR's own changes), not from the target's latest commit."""
+    if not base or base == commit:
+        return None
+    if event in ('pull_request', 'pull_request_target'):
+        base = snapshot.git(['merge-base', base, commit], repo, check=False) or base
+    return snapshot.changed_files(repo, base, commit)
+
+
 def plan_inputs(args, require_report=False):
     repo = find_repo(args.repo)
     ref = args.commit or args.ref or 'HEAD'
@@ -195,7 +205,7 @@ def plan_inputs(args, require_report=False):
     inp = {'event': event, 'ref_name': ref_name, 'default_branch': default, 'commit': commit, 'base': base,
            'repository': repository or '', 'profile': args.profile, 'jobs': args.job, 'workflow': args.workflow,
            'backend': args.backend, 'default_backend': gcfg.get('backend'),
-           'changed': snapshot.changed_files(repo, base, commit) if base and base != commit else None}
+           'changed': changed_paths(repo, event, base, commit)}
     try:
         plan = workflow.build_plan(files, cfg, inp)
     except workflow.ConfigError as error:

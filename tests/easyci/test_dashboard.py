@@ -97,6 +97,24 @@ class Dashboard(EasyCITest):
         self.assertIn(str(repo), result.stdout)
         self.assertIn('passed', result.stdout)          # and the run is listed
 
+    def test_dashboard_alone_finishes_a_run_whose_supervisor_died(self):
+        # Review finding: only CLI commands ran the reaper, so the dashboard showed `running` forever.
+        import os
+        import subprocess
+        import time
+        from easyci import store
+        from test_runs import sleeper
+        repo = self.make_repo(sleeper(60), {'easyci.yml': 'backend: native\nreport: false\n'})
+        run_id = self.start(repo, '--no-report')['run_id']
+        rd = self.run_dir(run_id)
+        self.until(lambda: (rd / 'heartbeat.json').exists() and (rd / 'jobs/slow/pid').exists())
+        subprocess.run(['taskkill', '/F', '/PID', str(store.read_json(rd / 'heartbeat.json')['pid'])],
+                       capture_output=True)
+        time.sleep(float(os.environ['EASYCI_STALE_S']) + 1.5)
+        dashboard._REAP['last'] = 0.0
+        status, body = self.request('GET', f'/api/runs/{run_id}')  # no CLI command in between
+        self.assertEqual((status, json.loads(body)['data']['state']), (200, 'interrupted'))
+
     def test_foreign_host_header_is_refused(self):
         # A page on another site that resolves its own name to 127.0.0.1 (DNS rebinding) is turned away.
         self.assertEqual(self.request('GET', '/api/runs', host='evil.example:80')[0], 403)
