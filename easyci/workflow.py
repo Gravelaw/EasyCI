@@ -428,7 +428,7 @@ def expand_matrix(job, gh):
         combos = [{**c, key: v} for c in combos for v in matrix[key]]
     if not keys:
         combos = []
-    combos = [c for c in combos if not any(isinstance(e, dict) and all(expr.equal(c.get(k), v) for k, v in e.items())
+    combos = [c for c in combos if not any(isinstance(e, dict) and all(matrix_equal(c.get(k), v) for k, v in e.items())
                                            for e in exclude)]
     # GitHub's rule: an include entry is added to every original combination whose matrix values it
     # does not contradict (an entry with no matrix keys fits them all); it never overwrites an
@@ -441,7 +441,7 @@ def expand_matrix(job, gh):
         original = {k: v for k, v in entry.items() if k in keys}
         matched = False
         for combo in combos:
-            if all(expr.equal(combo.get(k), v) for k, v in original.items()):
+            if all(matrix_equal(combo.get(k), v) for k, v in original.items()):
                 combo.update({k: v for k, v in entry.items() if k not in keys})
                 matched = True
         if not matched:
@@ -456,6 +456,14 @@ def expand_matrix(job, gh):
         raise Unsupported('unsupported_matrix:fail-fast must be true or false')
     return [(combo, {'job-index': i, 'job-total': len(combos), 'fail-fast': fail_fast,
                      'max-parallel': strategy.get('max-parallel', len(combos))}) for i, combo in enumerate(combos)]
+
+
+def matrix_equal(a, b):
+    """Matrix values compare by content: objects and lists structurally (two `{version: 20}` from
+    different places are the same entry), scalars with the expression language's loose equality."""
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return a == b
+    return expr.equal(a, b)
 
 
 def plan_matrix_jobs(wf_path, wf, jid, job, jcfg, cfg, inp, gh, reserved=None):
