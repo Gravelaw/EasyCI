@@ -40,6 +40,9 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
         raise cli.Fail(2, 'NO_GITHUB_REMOTE', 'origin is not a GitHub repository, so there are no pull requests to watch.',
                        'Add a GitHub origin remote.')
     me = (github.gh_json(['api', 'user']) or {}).get('login')
+    if not me and not all_authors:  # never fall back to running everyone's code
+        raise cli.Fail(3, 'GH_FAILED', 'Could not find out which GitHub user you are, so EasyCI cannot tell your '
+                       "pull requests from other people's.", 'Run: gh auth status (or pass --all-authors on purpose)')
     pulls = github.gh_json(['api', f'repos/{remote}/pulls?state=open&per_page=100'])
     if pulls is None:
         raise cli.Fail(3, 'GH_FAILED', 'Could not list pull requests with gh.', 'Run: gh auth status')
@@ -55,7 +58,7 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
             out.append({'pr': int(number), 'sha': sha, 'skipped': 'from a fork; never run automatically'})
             seen[number] = sha
             continue
-        if not all_authors and me and (pr.get('user') or {}).get('login') != me:
+        if not all_authors and (pr.get('user') or {}).get('login') != me:
             out.append({'pr': int(number), 'sha': sha, 'skipped': f'opened by {pr["user"]["login"]}, not you'})
             seen[number] = sha
             continue

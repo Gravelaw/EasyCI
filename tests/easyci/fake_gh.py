@@ -30,6 +30,8 @@ if args and args[0] == 'api':
     store = os.environ.get('FAKE_GH_COMMENTS')
     comments = json.load(open(store, encoding='utf-8')) if store and os.path.exists(store) else []
     if path == 'user':
+        if os.environ.get('FAKE_GH_USER_FAILS'):
+            sys.exit(1)
         print(json.dumps({'login': 'fake-user'}))
     elif re.fullmatch(r'repos/[^/]+/[^/]+/pulls(\?.*)?', path):
         print(os.environ.get('FAKE_GH_PULLS', '[]'))

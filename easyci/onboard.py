@@ -234,6 +234,22 @@ def write(repo, files):
     return written
 
 
+SETUP_PATHS = ('.github/workflows/ci.yml', 'easyci.yml')
+
+
+def uncommitted(repo):
+    """Files setup writes that exist but are not tracked yet, e.g. after `setup --write`."""
+    import subprocess
+    out = []
+    for path in SETUP_PATHS:
+        if (pathlib.Path(repo) / path).is_file():
+            tracked = subprocess.run(['git', 'ls-files', '--error-unmatch', '--', path], cwd=repo,
+                                     capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
+            if not tracked:
+                out.append(path)
+    return out
+
+
 class CommitError(Exception):
     pass
 

@@ -44,6 +44,18 @@ class Watch(EasyCITest):
         for item in doc['data']['started']:
             self.wait(item['run_id'])
 
+    def test_unknown_user_runs_nothing_unless_all_authors(self):
+        # Review finding: a failed `gh api user` used to drop the author filter and run everyone's PRs.
+        repo = self.make_repo(QUICK, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        os.environ['FAKE_GH_PULLS'] = json.dumps([pull(3, head, login='colleague', base=head)])
+        os.environ['FAKE_GH_USER_FAILS'] = '1'
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual((code, doc['error']['code']), (3, 'GH_FAILED'))
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report', '--all-authors')
+        self.assertEqual([s['pr'] for s in doc['data']['started']], [3])
+        self.wait(doc['data']['started'][0]['run_id'])
+
     def test_watch_needs_a_github_remote(self):
         repo = self.make_repo(QUICK)
         code, doc, _ = self.call('watch', '--repo', repo, '--once')

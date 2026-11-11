@@ -258,15 +258,12 @@ def cmd_run(args):
     if args.no_queue and store.busy():
         raise Fail(5, 'BUSY', f'The machine is busy with run {store.busy()}.',
                    'Wait for it (easyci wait), or run again without --no-queue to queue behind it.')
-    slug = store.project_slug(info['repo'])
-    pdir = store.project_dir(slug)
+    pdir = register_project(info['repo'], {'remote': info['repository'], 'default_branch': info['default_branch'],
+                                           'last_import': plan_summary(plan),
+                                           'retention': info['cfg'].get('retention')})
     run_id = store.new_run_id()
     rd = pdir / 'runs' / run_id
     rd.mkdir(parents=True)
-    store.write_json(pdir / 'project.json', {'repo': str(info['repo']), 'remote': info['repository'],
-                                             'default_branch': info['default_branch'],
-                                             'last_import': plan_summary(plan), 'updated_at': store.iso(),
-                                             'retention': info['cfg'].get('retention')})
     options = {'no_queue': args.no_queue, 'report': info['report'], 'keep': args.keep, 'wait': args.wait}
     store.write_json(rd / 'request.json', {
         'schema': SCHEMA, 'run_id': run_id, 'repo': str(info['repo']), 'commit': info['commit'], 'base': info['base'],
@@ -278,7 +275,7 @@ def cmd_run(args):
              'steps_total': len(j['steps']), 'steps_done': 0, 'timeout_minutes': j['timeout_minutes'],
              'stall_minutes': j['stall_minutes']} for j in plan['jobs']]
     store.write_json(rd / 'run.json', {
-        'schema': SCHEMA, 'run_id': run_id, 'project': slug, 'repo': str(info['repo']), 'commit': info['commit'],
+        'schema': SCHEMA, 'run_id': run_id, 'project': pdir.name, 'repo': str(info['repo']), 'commit': info['commit'],
         'base': info['base'], 'tree': None, 'event': info['event'], 'profile': args.profile, 'state': 'queued',
         'stalled': False, 'launch': None, 'created_at': store.iso(), 'started_at': None, 'finished_at': None,
         'jobs': jobs, 'github': {'enabled': info['report'], 'repo': info['repository'], 'contexts': {},
@@ -533,23 +530,28 @@ def cmd_setup(args):
     result['written'] = written
     if written and not args.json:
         say(args, 'Wrote ' + ', '.join(written) + '.')
-    if args.commit and written:
+    # Files an earlier `setup --write` (or a commit that failed) left uncommitted are committed too.
+    pending = sorted(set(written) | set(onboard.uncommitted(repo)))
+    result['uncommitted'] = [] if args.commit else pending
+    if args.commit and pending:
         try:
-            result['commit'] = onboard.commit(repo, written)
+            result['commit'] = onboard.commit(repo, pending)
         except onboard.CommitError as error:
             raise Fail(3, 'GIT_COMMIT_FAILED', f'The files were written but git could not commit them: {error}',
                        'Set your git name and email (git config --global user.name "..." and user.email "..."), '
                        'then run: easyci setup --commit', data=result) from None
         say(args, f'Committed them as {result["commit"][:7]} ("Add EasyCI checks").')
-    elif written:
+    elif pending:
         say(args, 'Next: commit these files (EasyCI tests committed code), then run `easyci run`. '
                   'Or run `easyci setup --commit` to commit just these files.')
     if args.desktop:
         result['launcher'] = onboard.write_launcher(repo, sys.executable)
         result['dashboard_launcher'] = onboard.write_dashboard_launcher(sys.executable)
         say(args, f'Made double-click launchers: {result["launcher"]} and {result["dashboard_launcher"]}')
+    if not result['files'] or written or result.get('commit'):
+        result['project'] = register_project(repo).name  # the dashboard lists it and can start runs at once
     if args.run:
-        if written and not args.commit:
+        if pending and not args.commit:
             raise Fail(2, 'UNCOMMITTED_SETUP', 'The new files are not committed yet, so a run would not see them.',
                        'Run: easyci setup --commit --run', data=result)
         ns = argparse.Namespace(**{**vars(args), 'commit': None, 'ref': None, 'base': None, 'profile': None,
@@ -557,6 +559,18 @@ def cmd_setup(args):
                                    'wait': False, 'no_queue': False, 'no_report': False, 'keep': False})
         result['run'] = cmd_run(ns)
     return result
+
+
+def register_project(repo, fields=None):
+    """Record the project in %EASYCI_HOME%/projects/<slug>/project.json (what the dashboard lists)."""
+    pdir = store.project_dir(store.project_slug(repo))
+    pdir.mkdir(parents=True, exist_ok=True)
+    info = store.read_json(pdir / 'project.json') or {}
+    if fields is None:
+        fields = {'remote': info.get('remote') or github.parse_remote(snapshot.origin_url(repo))}
+    info.update({'repo': str(repo), **fields, 'updated_at': store.iso()})
+    store.write_json(pdir / 'project.json', info)
+    return pdir
 
 
 def cmd_watch(args):
