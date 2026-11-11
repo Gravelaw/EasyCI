@@ -510,8 +510,9 @@ jobs:
         code, doc, _ = self.call('status', run['run_id'])
         self.assertEqual(doc['data']['state'], 'interrupted')
         self.assertFalse(store.lock_dir().exists())
-        self.assertFalse(store.pid_alive(child), 'leftover step tree killed by the reaper')
-        self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
+        # TerminateProcess returns before the process is gone; allow it a moment under load.
+        self.until(lambda: not store.pid_alive(child), timeout=10)  # leftover step tree killed by the reaper
+        self.until(lambda: not store.pid_alive(self.sleep_pid(rd)), timeout=10)
         self.assertEqual(self.final_statuses()['easyci/slow'][0], 'error')
         self.assertEqual(self.final_statuses()['easyci'][0], 'error')
         code, doc, _ = self.call('wait', run['run_id'])
