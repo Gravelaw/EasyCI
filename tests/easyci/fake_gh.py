@@ -49,7 +49,12 @@ if args and args[0] == 'api':
             comments.append({'id': len(comments) + 1, 'issue': number, 'body': fields.get('body', '')})
             print(json.dumps(comments[-1]))
         else:
-            print(json.dumps([c for c in comments if c['issue'] == number]))
+            mine = [c for c in comments if c['issue'] == number]
+            if '--slurp' in args:  # pages of 100, as gh --paginate --slurp prints
+                mine = [mine[i:i + 100] for i in range(0, len(mine), 100)] or [[]]
+            elif '--paginate' not in args:
+                mine = mine[:100]
+            print(json.dumps(mine))
     elif re.fullmatch(r'repos/[^/]+/[^/]+/issues/comments/\d+', path) and method == 'PATCH':
         cid = int(path.rsplit('/', 1)[1])
         for comment in comments:

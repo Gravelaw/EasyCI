@@ -173,6 +173,38 @@ class PrComment(EasyCITest):
         self.assertIn('broken-thing', body)
         self.assertIn(run['run_id'], body)  # the second run's id: the comment shows the latest run
 
+    def test_existing_comment_found_past_the_first_100(self):
+        # Review finding: only the first 100 comments were searched, so a busy PR got a second one.
+        repo = self.make_repo(QUICK, {'easyci.yml': 'backend: native\npr_comment: true\n'}, remote=REMOTE)
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        store_file = self.tmp / 'comments.json'
+        chatter = [{'id': i, 'issue': 7, 'body': f'comment {i}'} for i in range(1, 121)]
+        store_file.write_text(json.dumps(chatter + [{'id': 121, 'issue': 7, 'body': '<!-- easyci:pr-comment --> old'}]))
+        os.environ.update(FAKE_GH_COMMENTS=str(store_file),
+                          FAKE_GH_COMMIT_PULLS=json.dumps([{'number': 7, 'state': 'open', 'head': {'sha': head}}]))
+        self.wait(self.start(repo)['run_id'])
+        comments = json.loads(store_file.read_text())
+        self.assertEqual(len(comments), 121)
+        self.assertIn('All checks passed', comments[-1]['body'])  # the old one, updated in place
+
+    def test_watch_loop_survives_a_github_outage(self):
+        # Review finding: one failed GitHub call ended the long-running watcher.
+        from unittest import mock
+        from easyci import cli, watch
+        results = [cli.Fail(3, 'GH_FAILED', 'Could not list pull requests with gh.', 'Run: gh auth status'), []]
+
+        def fake_cycle(repo, **kwargs):
+            outcome = results.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        said, slept = [], []
+        with mock.patch.object(watch, 'cycle', fake_cycle):
+            watch.loop('repo', 5, said.append, cycles=2, sleep=slept.append)
+        self.assertEqual(results, [])            # the second check happened
+        self.assertEqual(slept, [300.0])
+        self.assertIn('trying again in 5 minutes', said[0])
+
     def test_no_comment_unless_enabled(self):
         repo = self.make_repo(QUICK, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
         store_file = self.tmp / 'comments.json'

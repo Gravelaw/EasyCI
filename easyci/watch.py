@@ -106,8 +106,19 @@ def sentence(item):
     return f'PR #{item["pr"]} ({item["sha"][:7]}) not run: {item["skipped"]}.'
 
 
-def loop(repo, interval_minutes, say, **kwargs):
-    while True:
-        for item in cycle(repo, **kwargs):
-            say(sentence(item))
-        time.sleep(max(60.0, interval_minutes * 60))
+def loop(repo, interval_minutes, say, cycles=None, sleep=time.sleep, **kwargs):
+    """Check every interval. A GitHub failure (network down, gh timing out) is reported and the next
+    check happens as usual; it never relaxes the author checks, since nothing runs in a failed cycle."""
+    from easyci import cli
+    done = 0
+    while cycles is None or done < cycles:
+        try:
+            for item in cycle(repo, **kwargs):
+                say(sentence(item))
+        except cli.Fail as error:
+            if error.code != 'GH_FAILED':
+                raise
+            say(f'GitHub could not be reached ({error.message}); trying again in {interval_minutes:g} minutes.')
+        done += 1
+        if cycles is None or done < cycles:
+            sleep(max(60.0, interval_minutes * 60))
