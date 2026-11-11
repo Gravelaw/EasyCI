@@ -203,6 +203,7 @@ def plan_inputs(args, require_report=False):
     files = [(p, snapshot.show(repo, commit, p)) for p in paths]
     repository = github.parse_remote(snapshot.origin_url(repo))
     inp = {'event': event, 'ref_name': ref_name, 'default_branch': default, 'commit': commit, 'base': base,
+           'base_ref': getattr(args, 'base_ref', None),
            'repository': repository or '', 'profile': args.profile, 'jobs': args.job, 'workflow': args.workflow,
            'backend': args.backend, 'default_backend': gcfg.get('backend'),
            'changed': changed_paths(repo, event, base, commit)}
@@ -729,6 +730,7 @@ def build_parser():
         p.add_argument('--commit')
         p.add_argument('--ref')
         p.add_argument('--base')
+        p.add_argument('--base-ref', help='the branch a pull request targets (default: the default branch)')
         p.add_argument('--profile')
         p.add_argument('--event', choices=['push', 'pull_request', 'workflow_dispatch'])
         p.add_argument('--job', action='append')

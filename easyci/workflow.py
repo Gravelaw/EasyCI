@@ -202,7 +202,7 @@ def applies(doc, path, inp):
     if event not in trig:
         return False, f'not triggered by {event}'
     filt, notes = trig[event], []
-    branch = inp['ref_name'] if event == 'push' else inp['default_branch']
+    branch = inp['ref_name'] if event == 'push' else (inp.get('base_ref') or inp['default_branch'])
     if event == 'push' and ('tags' in filt or 'tags-ignore' in filt) and not ('branches' in filt or 'branches-ignore' in filt):
         return False, 'push filter only matches tags'
     if 'branches' in filt and not filter_match(filt['branches'], branch):
@@ -229,9 +229,10 @@ def github_context(inp):
           'server_url': 'https://github.com', 'head_ref': '', 'base_ref': '',
           'event': {'repository': {'default_branch': default}}}
     if inp['event'] == 'pull_request':
-        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base']}}
+        target = inp.get('base_ref') or default  # the branch the pull request targets
+        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base'], 'ref': target}}
         gh['head_ref'] = '' if re.fullmatch(r'[0-9a-f]{40}', ref_name) else ref_name
-        gh['base_ref'] = default
+        gh['base_ref'] = target
     return gh
 
 

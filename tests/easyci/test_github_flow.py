@@ -128,6 +128,24 @@ class Watch(EasyCITest):
         self.assertEqual([s['pr'] for s in doc['data']['started']], [151], doc['data']['started'])
         self.wait(doc['data']['started'][0]['run_id'])
 
+    def test_target_branch_and_later_all_authors(self):
+        # Review findings: the PR's target branch was replaced by the default branch, and a head
+        # skipped for its author stayed skipped even with --all-authors.
+        wf = ('on:\n  pull_request:\n    branches: [release]\njobs:\n  t:\n    runs-on: ubuntu-latest\n'
+              '    steps:\n      - run: echo "base_ref=${{ github.base_ref }}"\n')
+        repo = self.make_repo(wf, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        to_release = pull(4, head, login='colleague', base=head)
+        to_release['base']['ref'] = 'release'
+        os.environ['FAKE_GH_PULLS'] = json.dumps([to_release])
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual([s['pr'] for s in doc['data']['skipped']], [4])
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report', '--all-authors')
+        self.assertEqual([s['pr'] for s in doc['data']['started']], [4], doc)
+        code, data = self.wait(doc['data']['started'][0]['run_id'])
+        self.assertEqual([j['state'] for j in data['jobs']], ['passed'], data)
+        self.assertIn('base_ref=release', (self.run_dir(data['run_id']) / 'jobs/t/log.txt').read_text())
+
     def test_watch_needs_a_github_remote(self):
         repo = self.make_repo(QUICK)
         code, doc, _ = self.call('watch', '--repo', repo, '--once')

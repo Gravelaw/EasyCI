@@ -125,6 +125,19 @@ class Onboarding(EasyCITest):
         code, doc, _ = self.call('setup', '--repo', repo)
         self.assertEqual((code, doc['data']['files']), (0, []))
 
+    def test_julia_override_only_for_the_starter_job(self):
+        # Review finding: a Julia repo with its own workflow (job `test`) got `jobs: {julia: ...}` in
+        # easyci.yml, which names a job that does not exist, so every run was refused.
+        os.environ['EASYCI_FAKE_PROBES'] = json.dumps(PROBES)
+        own = 'on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
+        repo = self.make_repo(own, {'Project.toml': 'name = "X"\n'}, name='jl-own')
+        code, doc, _ = self.call('setup', '--repo', repo, '--write')
+        self.assertEqual(code, 0, doc)
+        self.assertNotIn('julia:', (pathlib.Path(repo) / 'easyci.yml').read_text())
+        repo = self.make_repo(None, {'Project.toml': 'name = "X"\n'}, name='jl-new')
+        self.call('setup', '--repo', repo, '--write')
+        self.assertIn('julia:', (pathlib.Path(repo) / 'easyci.yml').read_text())
+
     def test_gradle_without_a_wrapper_needs_gradle(self):
         # Review finding: only java and git were probed, so a distro without gradle could be chosen.
         stacks = [{'stack': 'gradle', 'wrapper': False}]
