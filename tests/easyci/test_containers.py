@@ -3,7 +3,7 @@ import unittest
 
 import ecsupport  # noqa: F401 - puts the repository root on sys.path
 from easyci import workflow
-from easyci.backends.podman import parse_options, parse_ports
+from easyci.backends.podman import object_name, parse_options, parse_ports
 
 INP = {'event': 'push', 'ref_name': 'main', 'default_branch': 'main', 'commit': 'a' * 40, 'base': 'b' * 40,
        'repository': 'o/r'}
@@ -64,3 +64,13 @@ class ContainerPlanning(unittest.TestCase):
         self.assertTrue(workflow.BACKEND.match('podman:easyci-containers'))
         with self.assertRaises(workflow.ConfigError):
             workflow.load_config('container_backend: wsl:x\n')
+
+
+class Names(unittest.TestCase):
+    def test_long_names_keep_services_apart(self):
+        # Review finding: truncating to 63 characters gave two services the same container name.
+        base = 'easyci-20261111-194847-ff8b-integration-tests-with-long-name-123456'[:60]
+        a, b = object_name(base, 'redis-primary'), object_name(base, 'redis-secondary')
+        self.assertNotEqual(a, b)
+        self.assertTrue(all(len(n) <= 63 and n.startswith('easyci-20261111-194847-ff8b') for n in (a, b)))
+        self.assertEqual(object_name('easyci-x-y', 'db'), 'easyci-x-y-db')

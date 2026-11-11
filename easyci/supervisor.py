@@ -707,6 +707,13 @@ class Supervisor:
         if not key:
             self.marker('cache key is empty after evaluation; skipping the cache')
             return True, {'outputs': {'cache-hit': 'false'}}
+        if getattr(backend, 'container', None):
+            # The cache store lives in the distro, not in the job's image; a hit there would not put the
+            # files in the container. Always a miss (install steps run), never saved.
+            self.marker(f'cache not used inside a job container; treated as a miss: {key}')
+            if str(with_.get('fail-on-cache-miss', 'false')).lower() == 'true' and step['variant'] != 'save':
+                return False, {'exit_code': 1, 'outputs': {'cache-hit': 'false'}}
+            return True, {'outputs': {'cache-hit': 'false', 'cache-primary-key': key, 'cache-matched-key': ''}}
         store_ = backend.cache(self.run['project'])
         if step['variant'] == 'save':
             saved = store_.save(ws, paths, key)
