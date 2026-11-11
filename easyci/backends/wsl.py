@@ -99,7 +99,7 @@ class Wsl:
             exe = PROBE_TOOLS.get(tool, tool)
             flag = '-version' if tool == 'java' else 'version' if tool == 'go' else '-L' if tool == 'nvidia-smi' else '--version'
             lines.append(f'printf "%s=" {shlex.quote(tool)}; if command -v {shlex.quote(exe)} >/dev/null; then '
-                         f'{shlex.quote(exe)} {flag} 2>&1 | head -n 1; else echo; fi')
+                         f'{shlex.quote(exe)} {flag} 2>&1 | grep -m 1 .; else echo; fi')  # first non-empty line (gradle starts blank)
         if 'julia' in tools:
             lines.append('printf "julia_depot=%s\\n" "${JULIA_DEPOT_PATH:-$HOME/.julia}"')
         code, text = wsl_run(self.distro, '\n'.join(lines), timeout=120)
@@ -138,6 +138,7 @@ class Wsl:
         run = 'bash --noprofile --norc -eo pipefail' if shell == 'bash' else 'sh -e'
         q = shlex.quote
         wrapper.write_bytes((f'echo $$ > {q(to_linux(pgid))}\ncd {q(cwd)} || exit 1\n'
+                             '[ -n "${EASYCI_PATH_PREPEND:-}" ] && export PATH="$EASYCI_PATH_PREPEND:$PATH"\n'
                              f'exec {run} {q(to_linux(script))}\n').encode('utf-8'))
         names = [k for k in env if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)]
         full_env = {**os.environ, **{k: env[k] for k in names}, 'WSLENV': ':'.join(names)}

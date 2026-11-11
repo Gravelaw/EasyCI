@@ -34,6 +34,100 @@ def gh(args, timeout=60):
     return result.returncode, text
 
 
+def gh_json(args, timeout=60):
+    """Parsed JSON stdout of a gh call, or None (gh() mixes stdout and stderr for messages)."""
+    import json
+    try:
+        result = subprocess.run([*gh_command(), *args], capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                                creationflags=0x08000000 if os.name == 'nt' else 0)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout.decode('utf-8', errors='replace') or 'null')
+    except ValueError:
+        return None
+
+
+MARKER = '<!-- easyci:pr-comment -->'
+
+
+def comment_body(rd, run):
+    """The PR comment: the plain verdict, per-job lines, the failure explanation and metrics changes."""
+    from easyci import explain
+    lines = [MARKER, f'**EasyCI** on `{run.get("commit", "")[:7]}`: {explain.plain(run)}', '']
+    for job in explain.counted(run):
+        state = {'passed': 'passed', 'skipped': 'skipped'}.get(job.get('state'), job.get('state'))
+        lines.append(f'- `{job["name"]}`: {state}' + (f' ({job["reason"]})' if job.get('reason') else ''))
+    if run.get('state') in ('failed', 'unsupported', 'timed_out', 'interrupted'):
+        try:
+            why = explain.explain(rd, run, store.read_json(rd / 'plan.json') or {})
+            lines += ['', why['summary']]
+            if why.get('excerpt'):
+                lines += ['', '```', *why['excerpt'][-15:], '```']
+        except Exception:  # noqa: BLE001 - the comment still goes out without it
+            pass
+    delta = metrics_delta(rd, run)
+    if delta:
+        lines += ['', f'Metrics compared with the last passed run ({delta["against"]}):', '',
+                  '| metric | before | now |', '|---|---|---|']
+        lines += [f'| {k} | {b} | {n} |' for k, b, n in delta['rows']]
+    lines += ['', f'<sub>Run `{run.get("run_id")}` on {socket.gethostname()}. '
+              'Run `easyci explain` there for details.</sub>']
+    return '\n'.join(lines)
+
+
+def metrics_delta(rd, run):
+    """Metric values now vs. the latest earlier passed run of the same project that has metrics."""
+    now = {f'{j["name"]}.{k}': v for j in run.get('jobs', []) for k, v in (j.get('metrics') or {}).items()}
+    if not now:
+        return None
+    for other in sorted(pathlib_parent(rd).glob('*'), reverse=True):
+        if other.name >= rd.name:
+            continue
+        prev = store.read_json(other / 'run.json') or {}
+        if prev.get('state') != 'passed':
+            continue
+        before = {f'{j["name"]}.{k}': v for j in prev.get('jobs', []) for k, v in (j.get('metrics') or {}).items()}
+        if before:
+            return {'against': f'{other.name}, commit {prev.get("commit", "")[:7]}',
+                    'rows': [(k, before.get(k, '-'), v) for k, v in sorted(now.items())]}
+    return None
+
+
+def pathlib_parent(rd):
+    import pathlib
+    return pathlib.Path(rd).parent
+
+
+def post_comment(rd, run):
+    """Create or update the one EasyCI comment on each open PR whose head is this commit."""
+    info = run.get('github') or {}
+    if not info.get('enabled') or not info.get('repo'):
+        return []
+    repo, done = info['repo'], []
+    pulls = gh_json(['api', f'repos/{repo}/commits/{run["commit"]}/pulls']) or []
+    body = comment_body(rd, run)
+    for pr in pulls:
+        if pr.get('state') != 'open' or (pr.get('head') or {}).get('sha') != run['commit']:
+            continue
+        number = pr['number']
+        # Every page: on a busy PR the EasyCI comment can be past the first 100.
+        pages = gh_json(['api', '--paginate', '--slurp', f'repos/{repo}/issues/{number}/comments?per_page=100']) or []
+        existing = [c for page in pages for c in (page or []) if MARKER in (c.get('body') or '')]
+        if existing:
+            code, text = gh(['api', '--method', 'PATCH', f'repos/{repo}/issues/comments/{existing[-1]["id"]}',
+                             '-f', f'body={body}'])
+        else:
+            code, text = gh(['api', '--method', 'POST', f'repos/{repo}/issues/{number}/comments', '-f', f'body={body}'])
+        done.append({'pr': number, 'ok': code == 0, 'updated': bool(existing)})
+        if code != 0:
+            store.log(f'{run.get("run_id")}: PR comment on #{number} failed: {(text or "")[-200:]}')
+    info['comments'] = done
+    return done
+
+
 def auth_status():
     """{'installed', 'logged_in', 'account', 'repo_scope'}; never prints or stores a token."""
     if not (os.environ.get('EASYCI_GH') or shutil.which('gh')):
@@ -84,9 +178,27 @@ def desired(run):
     return [(c, s, d if len(d) <= 140 else d[:137] + '...') for c, s, d in out]
 
 
-def post(repo, sha, state, context, description):
-    code, text = gh(['api', '--method', 'POST', f'repos/{repo}/statuses/{sha}', '-f', f'state={state}',
-                     '-f', f'context={context}', '-f', f'description={description}'], timeout=60)
+def dashboard_url():
+    """`dashboard_url` from config.yml in EASYCI_HOME (spec Phase 2 target_url), or None."""
+    from easyci import store
+    path = store.home() / 'config.yml'
+    if not path.exists():
+        return None
+    try:
+        import yaml
+        url = (yaml.safe_load(path.read_text(encoding='utf-8')) or {}).get('dashboard_url')
+    except Exception:  # noqa: BLE001 - a broken config never blocks reporting
+        return None
+    return url.rstrip('/') if isinstance(url, str) and url.startswith(('http://127.0.0.1', 'http://localhost')) else None
+
+
+def post(repo, sha, state, context, description, run_id=None):
+    args = ['api', '--method', 'POST', f'repos/{repo}/statuses/{sha}', '-f', f'state={state}',
+            '-f', f'context={context}', '-f', f'description={description}']
+    base = dashboard_url()
+    if base and run_id:  # the link opens the run on this PC's dashboard
+        args += ['-f', f'target_url={base}/runs/{run_id}']
+    code, text = gh(args, timeout=60)
     return code == 0, None if code == 0 else (text or 'gh failed').strip()[-300:]
 
 
@@ -100,7 +212,7 @@ def sync(rd, run, force=False):
     for context, state, description in desired(run):
         if not force and posted.get(context) == state and context not in info.get('failed', []):
             continue
-        ok, error = post(info['repo'], run['commit'], state, context, description)
+        ok, error = post(info['repo'], run['commit'], state, context, description, run.get('run_id'))
         attempts.append({'at': store.iso(), 'context': context, 'state': state, 'ok': ok, 'error': error})
         if ok:
             posted[context] = state

@@ -78,8 +78,10 @@ class EasyCITest(unittest.TestCase):
 
     def make_repo(self, workflow, files=None, name='repo', remote=None):
         repo = self.tmp / name
-        (repo / '.github' / 'workflows').mkdir(parents=True)
-        (repo / '.github' / 'workflows' / 'ci.yml').write_bytes(workflow.encode())
+        repo.mkdir(parents=True)
+        if workflow is not None:  # None: a project without any workflow yet (easyci setup)
+            (repo / '.github' / 'workflows').mkdir(parents=True)
+            (repo / '.github' / 'workflows' / 'ci.yml').write_bytes(workflow.encode())
         for path, text in (files or {}).items():
             (repo / path).parent.mkdir(parents=True, exist_ok=True)
             (repo / path).write_bytes(text.encode())

@@ -13,7 +13,8 @@ class ConfigError(Exception):
     pass
 
 
-TOP_KEYS = {'version', 'backend', 'report', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths', 'busy_stale_minutes',
+TOP_KEYS = {'version', 'backend', 'report', 'pr_comment', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths',
+            'busy_stale_minutes',
             'busy_wait_minutes'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
             'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes', 'services', 'env'}
@@ -60,8 +61,9 @@ def load_config(text, source='easyci.yml'):
         raise ConfigError(f'{source}: only version 1 is supported')
     if 'backend' in cfg:
         backend_id(cfg['backend'], source)
-    if not isinstance(cfg.get('report', True), bool):
-        raise ConfigError(f'{source}: report must be true or false')
+    for key in ('report', 'pr_comment'):
+        if not isinstance(cfg.get(key, key == 'report'), bool):
+            raise ConfigError(f'{source}: {key} must be true or false')
     if cfg.get('gpu', 'optional') not in ('required', 'optional'):
         raise ConfigError(f'{source}: gpu must be required or optional')
     if not isinstance(cfg.get('busy_paths', []), list) or not all(isinstance(p, str) and p.strip()
@@ -190,7 +192,7 @@ def applies(doc, path, inp):
     if event not in trig:
         return False, f'not triggered by {event}'
     filt, notes = trig[event], []
-    branch = inp['ref_name'] if event == 'push' else inp['default_branch']
+    branch = inp['ref_name'] if event == 'push' else (inp.get('base_ref') or inp['default_branch'])
     if event == 'push' and ('tags' in filt or 'tags-ignore' in filt) and not ('branches' in filt or 'branches-ignore' in filt):
         return False, 'push filter only matches tags'
     if 'branches' in filt and not filter_match(filt['branches'], branch):
@@ -221,9 +223,10 @@ def github_context(inp):
           'server_url': 'https://github.com', 'head_ref': '', 'base_ref': '',
           'event': {'repository': {'default_branch': default}}}
     if inp['event'] == 'pull_request':
-        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base']}}
+        target = inp.get('base_ref') or default  # the branch the pull request targets
+        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base'], 'ref': target}}
         gh['head_ref'] = '' if re.fullmatch(r'[0-9a-f]{40}', ref_name) else ref_name
-        gh['base_ref'] = default
+        gh['base_ref'] = target
     return gh
 
 
@@ -643,7 +646,7 @@ def build_plan(workflows, cfg, inp):
         job['reported'] = (job['group'] in selection) if selection else not job['skip']
     plan = {'event': inp['event'], 'profile': profile, 'workflow': inp.get('workflow'), 'github': gh,
             'workflows': plan_wfs, 'jobs': ordered, 'gpu': cfg.get('gpu', 'optional'),
-            'report': cfg.get('report', True)}
+            'report': cfg.get('report', True), 'pr_comment': bool(cfg.get('pr_comment', False))}
     predict(plan)
     return plan
 

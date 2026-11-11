@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import platform
+import re
 import shutil
 import subprocess
 
@@ -13,6 +14,12 @@ PROBES = {'node': ['node', '--version'], 'npm': ['npm', '--version'], 'python': 
           'julia': ['julia', '--version'], 'java': ['java', '-version'], 'go': ['go', 'version'],
           'git': ['git', '--version'], 'pwsh': ['pwsh', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'],
           'nvidia-smi': ['nvidia-smi', '-L']}
+
+
+def windows_path(path):
+    """`/c/tools/bin` (as a Git Bash step writes it to $GITHUB_PATH) -> `C:\\tools\\bin`."""
+    match = re.fullmatch(r'/([A-Za-z])(/.*)?', path.strip())
+    return f'{match.group(1).upper()}:' + (match.group(2) or '/').replace('/', '\\') if match else path
 
 
 def git_bash():
@@ -75,7 +82,8 @@ class Native:
                 out[tool] = None
                 continue
             code, text = run_quiet([exe, *cmd[1:]], timeout=30, env=env)
-            out[tool] = text.splitlines()[0] if code == 0 and text else None
+            first = next((line for line in text.splitlines() if line.strip()), None) if code == 0 and text else None
+            out[tool] = first  # the first non-empty line (gradle --version starts with a blank one)
         if 'julia' in tools:  # recorded for reproducibility (spec section 13)
             out['julia_depot'] = os.environ.get('JULIA_DEPOT_PATH') or str(pathlib.Path.home() / '.julia')
         return out
@@ -104,6 +112,9 @@ class Native:
         path = steps / f'{index}{EXT[shell]}'
         path.write_bytes(script_text(shell, body).encode('utf-8'))
         full_env = {**host_env(), **env}
+        if env.get('EASYCI_PATH_PREPEND'):  # $GITHUB_PATH additions of earlier steps
+            full_env['PATH'] = os.pathsep.join([*map(windows_path, env['EASYCI_PATH_PREPEND'].split(os.pathsep)),
+                                                full_env.get('PATH', '')])
         if os.name == 'nt' and getattr(self, 'winjob', None) is None:
             self.winjob = WinJob()
         job = getattr(self, 'winjob', None)

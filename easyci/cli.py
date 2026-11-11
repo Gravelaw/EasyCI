@@ -162,6 +162,16 @@ def read_config(args, repo, commit):
     return cfg, {'source': source, 'sha256': store.digest_bytes(data)}
 
 
+def changed_paths(repo, event, base, commit):
+    """Files a workflow's paths filters see. For a pull request GitHub compares from the merge base
+    of the target and the head (the PR's own changes), not from the target's latest commit."""
+    if not base or base == commit:
+        return None
+    if event in ('pull_request', 'pull_request_target'):
+        base = snapshot.git(['merge-base', base, commit], repo, check=False) or base
+    return snapshot.changed_files(repo, base, commit)
+
+
 def plan_inputs(args, require_report=False):
     repo = find_repo(args.repo)
     ref = args.commit or args.ref or 'HEAD'
@@ -193,9 +203,10 @@ def plan_inputs(args, require_report=False):
     files = [(p, snapshot.show(repo, commit, p)) for p in paths]
     repository = github.parse_remote(snapshot.origin_url(repo))
     inp = {'event': event, 'ref_name': ref_name, 'default_branch': default, 'commit': commit, 'base': base,
+           'base_ref': getattr(args, 'base_ref', None),
            'repository': repository or '', 'profile': args.profile, 'jobs': args.job, 'workflow': args.workflow,
            'backend': args.backend, 'default_backend': gcfg.get('backend'),
-           'changed': snapshot.changed_files(repo, base, commit) if base and base != commit else None}
+           'changed': changed_paths(repo, event, base, commit)}
     try:
         plan = workflow.build_plan(files, cfg, inp)
     except workflow.ConfigError as error:
@@ -258,15 +269,12 @@ def cmd_run(args):
     if args.no_queue and store.busy():
         raise Fail(5, 'BUSY', f'The machine is busy with run {store.busy()}.',
                    'Wait for it (easyci wait), or run again without --no-queue to queue behind it.')
-    slug = store.project_slug(info['repo'])
-    pdir = store.project_dir(slug)
+    pdir = register_project(info['repo'], {'remote': info['repository'], 'default_branch': info['default_branch'],
+                                           'last_import': plan_summary(plan),
+                                           'retention': info['cfg'].get('retention')})
     run_id = store.new_run_id()
     rd = pdir / 'runs' / run_id
     rd.mkdir(parents=True)
-    store.write_json(pdir / 'project.json', {'repo': str(info['repo']), 'remote': info['repository'],
-                                             'default_branch': info['default_branch'],
-                                             'last_import': plan_summary(plan), 'updated_at': store.iso(),
-                                             'retention': info['cfg'].get('retention')})
     options = {'no_queue': args.no_queue, 'report': info['report'], 'keep': args.keep, 'wait': args.wait}
     store.write_json(rd / 'request.json', {
         'schema': SCHEMA, 'run_id': run_id, 'repo': str(info['repo']), 'commit': info['commit'], 'base': info['base'],
@@ -278,7 +286,7 @@ def cmd_run(args):
              'steps_total': len(j['steps']), 'steps_done': 0, 'timeout_minutes': j['timeout_minutes'],
              'stall_minutes': j['stall_minutes']} for j in plan['jobs']]
     store.write_json(rd / 'run.json', {
-        'schema': SCHEMA, 'run_id': run_id, 'project': slug, 'repo': str(info['repo']), 'commit': info['commit'],
+        'schema': SCHEMA, 'run_id': run_id, 'project': pdir.name, 'repo': str(info['repo']), 'commit': info['commit'],
         'base': info['base'], 'tree': None, 'event': info['event'], 'profile': args.profile, 'state': 'queued',
         'stalled': False, 'launch': None, 'created_at': store.iso(), 'started_at': None, 'finished_at': None,
         'jobs': jobs, 'github': {'enabled': info['report'], 'repo': info['repository'], 'contexts': {},
@@ -515,6 +523,115 @@ def cmd_verify(args):
     return data
 
 
+def cmd_setup(args):
+    """Get a repository ready: detect stacks, pick a backend, write a starter workflow and easyci.yml."""
+    from easyci import onboard
+    repo = find_repo(args.repo)
+    result = onboard.plan(repo)
+    if not args.json:
+        for line in onboard.sentences(result):
+            say(args, line)
+    write = args.write or args.commit
+    if result['files'] and not write and not args.json and sys.stdin.isatty():
+        answer = input('Write these files now? [Y/n] ').strip().lower()
+        write = answer in ('', 'y', 'yes')
+    written = onboard.write(repo, result['files']) if write else []
+    for item in result['files']:
+        item['written'] = item['path'] in written
+    result['written'] = written
+    if written and not args.json:
+        say(args, 'Wrote ' + ', '.join(written) + '.')
+    # Files an earlier `setup --write` (or a commit that failed) left uncommitted are committed too.
+    pending = sorted(set(written) | set(onboard.uncommitted(repo)))
+    result['uncommitted'] = [] if args.commit else pending
+    if args.commit and pending:
+        try:
+            result['commit'] = onboard.commit(repo, pending)
+        except onboard.CommitError as error:
+            raise Fail(3, 'GIT_COMMIT_FAILED', f'The files were written but git could not commit them: {error}',
+                       'Set your git name and email (git config --global user.name "..." and user.email "..."), '
+                       'then run: easyci setup --commit', data=result) from None
+        say(args, f'Committed them as {result["commit"][:7]} ("Add EasyCI checks").')
+    elif pending:
+        say(args, 'Next: commit these files (EasyCI tests committed code), then run `easyci run`. '
+                  'Or run `easyci setup --commit` to commit just these files.')
+    if args.desktop:
+        result['launcher'] = onboard.write_launcher(repo, sys.executable)
+        result['dashboard_launcher'] = onboard.write_dashboard_launcher(sys.executable)
+        say(args, f'Made double-click launchers: {result["launcher"]} and {result["dashboard_launcher"]}')
+    if not result['files'] or written or result.get('commit'):
+        result['project'] = register_project(repo).name  # the dashboard lists it and can start runs at once
+    if args.run:
+        if pending and not args.commit:
+            raise Fail(2, 'UNCOMMITTED_SETUP', 'The new files are not committed yet, so a run would not see them.',
+                       'Run: easyci setup --commit --run', data=result)
+        ns = argparse.Namespace(**{**vars(args), 'commit': None, 'ref': None, 'base': None, 'profile': None,
+                                   'event': None, 'job': None, 'workflow': None, 'backend': None, 'config': None,
+                                   'wait': False, 'no_queue': False, 'no_report': False, 'keep': False})
+        result['run'] = cmd_run(ns)
+    return result
+
+
+def register_project(repo, fields=None):
+    """Record the project in %EASYCI_HOME%/projects/<slug>/project.json (what the dashboard lists)."""
+    pdir = store.project_dir(store.project_slug(repo))
+    pdir.mkdir(parents=True, exist_ok=True)
+    info = store.read_json(pdir / 'project.json') or {}
+    if fields is None:
+        fields = {'remote': info.get('remote') or github.parse_remote(snapshot.origin_url(repo))}
+    info.update({'repo': str(repo), **fields, 'updated_at': store.iso()})
+    store.write_json(pdir / 'project.json', info)
+    return pdir
+
+
+def cmd_watch(args):
+    from easyci import watch
+    repo = find_repo(args.repo)
+    options = {'profile': args.profile, 'config': args.config, 'all_authors': args.all_authors,
+               'no_report': args.no_report}
+    if args.once:
+        items = watch.cycle(repo, **options)
+        if not args.json:
+            for item in items:
+                say(args, watch.sentence(item))
+            if not items:
+                say(args, 'No new pull request commits.')
+            return None
+        return {'started': [i for i in items if i.get('run_id') and not i.get('skipped')], 'skipped': [i for i in items if i.get('skipped')]}
+    if args.json:
+        raise Fail(2, 'USAGE', 'watch keeps running; use --once with --json.', 'Add --once.')
+    say(args, f'Watching pull requests of {repo} every {max(args.interval, 1):g} minutes. Press Ctrl+C to stop.')
+    try:
+        watch.loop(repo, args.interval, lambda text: say(args, text), **options)
+    except KeyboardInterrupt:
+        pass
+    return None
+
+
+def cmd_mcp(args):
+    from easyci import mcp
+    mcp.serve()
+    return None
+
+
+def cmd_dashboard(args):
+    from easyci import dashboard
+
+    def ready(url, server, token):
+        say(args, f'EasyCI dashboard: {url}  (only this PC can open it; press Ctrl+C to stop)')
+        if args.open:
+            import webbrowser
+            webbrowser.open(url)
+    try:
+        dashboard.serve(args.port, ready)
+    except OSError as error:
+        raise Fail(3, 'PORT_IN_USE', f'Cannot listen on 127.0.0.1:{args.port}: {error}',
+                   'Pick another port with --port, or close the program using it.') from None
+    except KeyboardInterrupt:
+        pass
+    return None
+
+
 def cmd_clean(args):
     default = global_config().get('retention') or 20
     deleted, kept = store.clean(args.keep, default)
@@ -545,6 +662,7 @@ def build_parser():
         p.add_argument('--commit')
         p.add_argument('--ref')
         p.add_argument('--base')
+        p.add_argument('--base-ref', help='the branch a pull request targets (default: the default branch)')
         p.add_argument('--profile')
         p.add_argument('--event', choices=['push', 'pull_request', 'workflow_dispatch'])
         p.add_argument('--job', action='append')
@@ -584,6 +702,24 @@ def build_parser():
     p = add('doctor', cmd_doctor, 'Check that this PC (and optionally a repo) is ready.')
     p.add_argument('--repo')
     p.add_argument('--config')
+    p = add('setup', cmd_setup, 'Get a project ready: detect it, pick where tests run, write a starter workflow.')
+    p.add_argument('--repo')
+    p.add_argument('--write', action='store_true', help='write the planned files (never overwrites)')
+    p.add_argument('--commit', action='store_true', help='write and commit only those files')
+    p.add_argument('--desktop', action='store_true', help='put a "Run checks" launcher on the Desktop')
+    p.add_argument('--run', action='store_true', help='start a run afterwards')
+    add('mcp', cmd_mcp, 'Serve the EasyCI tools to an AI agent over MCP (stdio).')
+    p = add('watch', cmd_watch, 'Queue a run for every new commit on your open pull requests.')
+    p.add_argument('--repo')
+    p.add_argument('--interval', type=float, default=5, help='minutes between checks (at least 1)')
+    p.add_argument('--once', action='store_true', help='check one time and exit (for Task Scheduler)')
+    p.add_argument('--profile')
+    p.add_argument('--config')
+    p.add_argument('--all-authors', action='store_true', help="also run other people's (non-fork) pull requests")
+    p.add_argument('--no-report', action='store_true')
+    p = add('dashboard', cmd_dashboard, 'Open a page on this PC that shows runs and can start or cancel them.')
+    p.add_argument('--port', type=int, default=8765)
+    p.add_argument('--open', action='store_true', help='open it in the browser')
     p = add('clean', cmd_clean, 'Delete old run evidence beyond retention.')
     p.add_argument('--keep', type=int)
     return parser
@@ -601,6 +737,9 @@ def emit(args_json, ok, data=None, error=None):
 
 
 def human(data):
+    if isinstance(data, dict) and 'stacks' in data and 'files' in data:  # setup already spoke line by line
+        run = data.get('run') or {}
+        return f'{run["plain"]} (run {run["run_id"]})' if run.get('run_id') else 'Setup check done.'
     if isinstance(data, dict) and 'plain' in data and 'run_id' in data:
         return f'{data["plain"]} (run {data["run_id"]})'
     if isinstance(data, dict) and 'runs' in data:

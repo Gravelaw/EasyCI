@@ -548,6 +548,18 @@ jobs:
         self.assertIn('downloaded 1 artifact(s), 1 file(s)', log)
         self.assertIn('artifact missing was not uploaded earlier in this run', log)
 
+    def test_github_path_reaches_later_steps(self):
+        workflow = ('on: push\njobs:\n  p:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: |\n          mkdir -p tools\n          printf \'#!/bin/sh\\necho from-mytool\\n\' > tools/mytool\n'
+                    '          chmod +x tools/mytool\n          echo "$PWD/tools" >> "$GITHUB_PATH"\n'
+                    '      - run: mytool\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        self.assertIn('from-mytool', (self.run_dir(data['run_id']) / 'jobs/p/log.txt').read_text())
+        from easyci.backends.native import windows_path
+        self.assertEqual((windows_path('/c/tools/bin'), windows_path('/d'), windows_path('rel')),
+                         ('C:\\tools\\bin', 'D:\\', 'rel'))
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'
