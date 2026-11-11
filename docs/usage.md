@@ -165,6 +165,9 @@ jobs:
     command: npm test         # replace every step of the job with this (Git Bash on native)
     on_kill: ./release.sh     # runs if EasyCI stops the job (cancel, timeout, stall kill); see below
     on_kill_minutes: 10       # time limit for on_kill
+    setup: ./prepare.sh       # runs first, as step 0; a failure fails the job; see below
+    cleanup: ./release.sh     # always runs after the steps (pass, fail, cancel, timeout)
+    cleanup_minutes: 10       # time limit for cleanup
     skip_steps: [3, "Upload coverage"]   # by 1-based index or by name
     evidence: [reports/**]    # copied into the run's evidence after the job
     required_env: [MY_TOKEN]  # host variables passed through (and masked as *** in logs)
@@ -187,6 +190,15 @@ cancel, a timeout or `stall_action: kill`, it kills the step's process tree firs
 the workspace is removed. It never runs when a job passes or fails on its own. Its output goes to
 the job log, its exit code is recorded as `on_kill` on the job in `easyci status --json`, and it
 never changes the job's result. Every step also sees `EASYCI_JOB` (the job id).
+
+`setup` and `cleanup` let a project prepare the machine the way its own runner does, without
+changing the workflow. `setup` runs as step 0 (`easyci.yml setup`) with the job's environment, so
+it can add a folder to `$GITHUB_PATH` or a variable to `$GITHUB_ENV` for the steps that follow; if
+it fails, the job fails there. `cleanup` runs after the steps in every case, including cancel and
+timeout, with the same environment plus `EASYCI_JOB_STATE` (`passed`, `failed`, `cancelled`,
+`timed_out`). It has its own time limit, its exit code is recorded as `cleanup` on the job, and it
+never changes the job's result. The JuliaFlow native example uses them to give Julia the same
+heap-size hint and temporary swap file that JuliaFlow's own runner uses on a 4 GiB WSL VM.
 
 `busy_paths` is for projects that also have a runner of their own. A matching file counts as busy
 when it is JSON with `"status": "running"` and something in its folder changed within

@@ -296,6 +296,48 @@ class NativeRuns(EasyCITest):
         self.assertNotIn('on_kill', data['jobs'][0])
         self.assertNotIn('on_kill', (self.run_dir(data['run_id']) / 'jobs/slow/log.txt').read_text())
 
+    def test_setup_and_cleanup_hooks(self):
+        # A project's own runner may prepare the machine (JuliaFlow: a swap file and a julia wrapper)
+        # and release it afterwards. setup runs first with $GITHUB_PATH; cleanup always runs.
+        wf = ('on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env: {WHO: workflow}\n    steps:\n'
+              '      - run: tool-from-setup\n      - run: exit "$RESULT"\n')
+        cfg = ('jobs:\n  j:\n    env: {RESULT: "%s"}\n    setup: |\n'
+               '      mkdir -p "$RUNNER_TEMP/bin"\n'
+               '      printf \'#!/bin/sh\\necho "wrapped for $WHO"\\n\' > "$RUNNER_TEMP/bin/tool-from-setup"\n'
+               '      chmod +x "$RUNNER_TEMP/bin/tool-from-setup"\n'
+               '      echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n'
+               '    cleanup: echo "cleanup saw $EASYCI_JOB_STATE"; exit 4\n')
+        for result, state in (('0', 'passed'), ('1', 'failed')):
+            repo = self.make_repo(wf, {'easyci.yml': cfg % result}, name=f'hooks-{result}')
+            code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+            job = data['jobs'][0]
+            self.assertEqual(data['state'], state, data)
+            self.assertEqual(job['cleanup']['exit_code'], 4)  # a failing cleanup never changes the result
+            log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
+            self.assertIn('wrapped for workflow', log)
+            self.assertIn(f'cleanup saw {state}', log)
+            self.assertLess(log.index('wrapped for workflow'), log.index('running cleanup'))
+        # A failing setup fails the job before the workflow's steps; cleanup still runs.
+        repo = self.make_repo(wf, {'easyci.yml': 'jobs:\n  j:\n    setup: exit 9\n    cleanup: echo released\n'},
+                              name='hooks-setup-fails')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        job = data['jobs'][0]
+        self.assertEqual((data['state'], job['failed_step']['name'], job['failed_step']['exit_code']),
+                         ('failed', 'easyci.yml setup', 9))
+        log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
+        self.assertNotIn('tool-from-setup', log.split('running cleanup')[0].split('easyci.yml setup')[-1])
+        self.assertIn('released', log)
+        # Cancel: cleanup runs after the step is stopped.
+        repo = self.make_repo(sleeper(60), {'easyci.yml': 'jobs:\n  slow:\n    cleanup: echo "after $EASYCI_JOB_STATE"\n'},
+                              name='hooks-cancel')
+        run = self.start(repo, '--no-report')
+        log_path = self.run_dir(run['run_id']) / 'jobs/slow/log.txt'
+        self.until(lambda: log_path.exists() and b'started' in log_path.read_bytes())
+        self.call('cancel', run['run_id'])
+        code, data = self.wait(run['run_id'])
+        self.assertEqual(data['state'], 'cancelled')
+        self.assertIn('after cancelled', log_path.read_text())
+
     def test_secrets_reach_later_steps_unmasked_but_never_persist(self):
         # Review findings: a secret forwarded through $GITHUB_ENV / $GITHUB_OUTPUT must arrive intact
         # (masking is for evidence, not execution), and a secret interpolated into a step script by

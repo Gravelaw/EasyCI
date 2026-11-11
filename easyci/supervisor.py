@@ -412,6 +412,9 @@ class Supervisor:
                     self.marker(f'cache save failed: {error}')
         if self.kill_reason and job.get('on_kill') and self.step_env is not None:
             self.run_on_kill(job, jr, backend, ws, job_dir)
+        if job.get('cleanup') and self.step_env is not None:
+            self.run_hook(jr, backend, ws, job_dir, 'cleanup', job['cleanup'], job.get('cleanup_minutes') or 10,
+                          {'EASYCI_JOB_STATE': outcome[0] if outcome else 'failed'})
         try:
             if job['evidence']:
                 copied = backend.collect(ws, job['evidence'], job_dir / 'artifacts' / 'evidence', layout='workspace')
@@ -435,18 +438,27 @@ class Supervisor:
         before evidence is collected and the workspace is removed, is not itself cancellable, has its
         own time limit, and never changes the job's state."""
         reason = self.kill_reason
-        limit_min = float(job.get('on_kill_minutes') or 10)
         self.marker(f'running on_kill cleanup (job stopped: {reason})')
-        env = {**self.step_env, 'EASYCI_KILL_REASON': reason}
+        self.run_hook(jr, backend, ws, job_dir, 'on_kill', job['on_kill'], job.get('on_kill_minutes') or 10,
+                      {'EASYCI_KILL_REASON': reason}, {'reason': reason})
+
+    def run_hook(self, jr, backend, ws, job_dir, name, script, limit_min, extra_env, record=None):
+        """Run an easyci.yml hook (on_kill, cleanup) in the job's workspace and environment. It is not
+        cancellable, has its own time limit, and never changes the job's state; its exit code is
+        recorded on the job."""
+        limit_min = float(limit_min)
+        if name != 'on_kill':
+            self.marker(f'running {name}')
+        env = {**self.step_env, **extra_env}
         started, timed_out, code = time.time(), False, None
         try:
-            proc = backend.start('bash', job['on_kill'], env, ws, job_dir, 'on_kill')
+            proc = backend.start('bash', script, env, ws, job_dir, name)
             thread = self.stream(proc)
             while proc.popen.poll() is None and time.time() < started + limit_min * 60:
                 time.sleep(poll_s())
             if proc.popen.poll() is None:
                 timed_out = True
-                self.marker(f'on_kill exceeded {limit_min:g} minutes; stopping it')
+                self.marker(f'{name} exceeded {limit_min:g} minutes; stopping it')
                 backend.kill(proc)
                 try:
                     proc.popen.wait(timeout=30)
@@ -455,14 +467,14 @@ class Supervisor:
             thread.join(timeout=10)
             code = proc.popen.returncode
         except Exception as error:  # noqa: BLE001 - reported, never fatal
-            self.marker(f'on_kill error: {error}')
+            self.marker(f'{name} error: {error}')
         finally:
             backend.end_job()
         elapsed = round(time.time() - started, 1)
         self.scrub_scripts(job_dir)
-        jr['on_kill'] = {'reason': reason, 'exit_code': code, 'timed_out': timed_out, 'elapsed_s': elapsed}
+        jr[name] = {**(record or {}), 'exit_code': code, 'timed_out': timed_out, 'elapsed_s': elapsed}
         exit_text = '' if code is None else f' (exit {code})'
-        self.marker(f'on_kill {"passed" if code == 0 else "failed"}{exit_text} after {elapsed}s')
+        self.marker(f'{name} {"passed" if code == 0 else "failed"}{exit_text} after {elapsed}s')
         self.save()
 
     def marker(self, text):

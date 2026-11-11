@@ -88,7 +88,7 @@ def view(rd):
     jobs = []
     for job in run.get('jobs', []):
         item = {k: job.get(k) for k in ('name', 'state', 'backend', 'steps_total', 'steps_done', 'exit_code', 'reason',
-                                        'stalled', 'last_output_at', 'fix', 'failed_step', 'metrics', 'reported', 'on_kill')}
+                                        'stalled', 'last_output_at', 'fix', 'failed_step', 'metrics', 'reported', 'on_kill', 'cleanup')}
         item['elapsed_s'] = job.get('elapsed_s') or (store.elapsed({'started_at': job['started_at']})
                                                      if job.get('state') == 'running' and job.get('started_at') else None)
         jobs.append({k: v for k, v in item.items() if v is not None})
