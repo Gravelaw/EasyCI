@@ -39,10 +39,17 @@ def last_error(text):
 
 
 def parse_ports(ports):
-    """['5432:5432', 6379, '8080/tcp'] -> [(container_port, host_port or None)]."""
+    """['5432:5432', 6379, '8080/tcp', '8125:8125/udp'] -> [(container_port, host_port or None)].
+    A udp or sctp port keeps its protocol (`8125/udp`), since Podman publishes TCP by default."""
     out = []
     for item in ports or []:
-        text = str(item).split('/')[0]
+        text, _, proto = str(item).partition('/')
+        proto = proto.lower() or 'tcp'
+        if proto not in ('tcp', 'udp', 'sctp'):
+            raise ValueError(f'unsupported port protocol {proto!r} in {item!r}')
+        if proto != 'tcp':
+            host, sep, container = text.rpartition(':')
+            text = f'{host}{sep}{container}/{proto}'
         if ':' in text:
             host, _, container = text.rpartition(':')
             out.append((container, host or None))
@@ -93,7 +100,7 @@ class Podman(Wsl):
             raise RuntimeError(f'podman network create failed: {text.strip()[-300:]}')
         context = {}
         for sid, spec in (services or {}).items():
-            cname = object_name(name, sid)
+            cname = object_name(name, f'svc-{sid}')  # never the job container's `-job`, even for a service named job
             args = ['run', '-d', '--name', cname, '--network', net, '--network-alias', sid]
             for key, value in (spec.get('env') or {}).items():
                 args += ['-e', f'{key}={value}']

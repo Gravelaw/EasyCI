@@ -72,6 +72,10 @@ class ContainerPlanning(unittest.TestCase):
             parse_options('--health-retries 3 --cpus 2')
         self.assertEqual(parse_ports(['5432:5432', 6379, '8080/tcp', ':9000']),
                          [('5432', '5432'), ('6379', None), ('8080', None), ('9000', None)])
+        # Review finding: /udp was dropped, so the port was published as TCP.
+        self.assertEqual(parse_ports(['8125:8125/udp', '53/UDP']), [('8125/udp', '8125'), ('53/udp', None)])
+        with self.assertRaises(ValueError):
+            parse_ports(['80/quic'])
         self.assertTrue(workflow.BACKEND.match('podman:easyci-containers'))
         with self.assertRaises(workflow.ConfigError):
             workflow.load_config('container_backend: wsl:x\n')
@@ -85,3 +89,7 @@ class Names(unittest.TestCase):
         self.assertNotEqual(a, b)
         self.assertTrue(all(len(n) <= 63 and n.startswith('easyci-20261111-194847-ff8b') for n in (a, b)))
         self.assertEqual(object_name('easyci-x-y', 'db'), 'easyci-x-y-db')
+
+    def test_a_service_named_job_is_not_the_job_container(self):
+        # Review finding: a service `job` and the job container got the same name.
+        self.assertNotEqual(object_name('easyci-r-j', 'svc-job'), object_name('easyci-r-j', 'job'))

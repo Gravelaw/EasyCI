@@ -213,6 +213,31 @@ jobs:
         self.assertEqual(doc['data']['state'], 'interrupted')
         self.assertEqual(self.containers(run_id), 0, 'the reaper removed the orphaned containers')
 
+    def test_a_service_named_job_beside_the_job_container(self):
+        # Review finding: a service named `job` got the job container's name and could not start.
+        text = """\
+on: push
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    container: docker.io/library/alpine:3.20
+    services:
+      job:
+        image: docker.io/library/redis:7-alpine
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    steps:
+      - run: |
+          printf 'PING\\r\\n' | nc -w 3 job 6379 | grep -q PONG && echo "service job: ok"
+"""
+        repo = self.make_repo(text, {'easyci.yml': f'container_backend: podman:{PODMAN}\n'})
+        code, doc, _ = self.call('run', '--repo', repo, '--no-report')
+        self.assertIn('data', doc, doc)
+        code, data = self.wait(doc['data']['run_id'], timeout=600)
+        log = (store.find_run(data['run_id']) / 'jobs/t/log.txt').read_text(encoding='utf-8')
+        self.assertEqual(data['state'], 'passed', log)
+        self.assertIn('service job: ok', log)
+        self.assertEqual(self.containers(data['run_id']), 0)
+
     def test_cancel_stops_the_job_container(self):
         text = ('on: push\njobs:\n  slow:\n    runs-on: ubuntu-latest\n    container: docker.io/library/alpine:3.20\n'
                 '    steps:\n      - run: echo started; sleep 600\n')
