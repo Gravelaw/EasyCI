@@ -14,6 +14,7 @@ import os
 import pathlib
 import shlex
 import shutil
+import stat
 import tarfile
 import time
 
@@ -60,6 +61,16 @@ def pick(entries, key, restore_keys, paths):
 
 
 # ---- native -------------------------------------------------------------------------------
+
+def make_replaceable(dest):
+    """Remove a file or link at dest so a restore can write it, even when it is read-only."""
+    if dest.is_symlink() or dest.is_file():
+        try:
+            os.chmod(dest, stat.S_IREAD | stat.S_IWRITE)
+        except OSError:
+            pass
+        dest.unlink()
+
 
 def restore_symlink(linkname, dest, root):
     """Recreate a cached symbolic link. Windows may refuse (no Developer Mode); then a link that points
@@ -126,8 +137,9 @@ class NativeCache:
                         dest.mkdir(parents=True, exist_ok=True)
                     elif member.isfile():
                         dest.parent.mkdir(parents=True, exist_ok=True)
+                        make_replaceable(dest)
                         with tar.extractfile(member) as src, open(dest, 'wb') as out:
-                            out.write(src.read())
+                            shutil.copyfileobj(src, out, 1 << 20)  # in chunks: members can be gigabytes
                     elif member.islnk() and (member.linkname == prefix or member.linkname.startswith(prefix + '/')):
                         # a hard link to a file stored earlier in this path: restore it as a copy
                         source = target / member.linkname[len(prefix):].lstrip('/')
@@ -135,8 +147,7 @@ class NativeCache:
                             if dest.exists() and os.path.samefile(source, dest):
                                 continue  # restoring over the same hard link: already in place
                             dest.parent.mkdir(parents=True, exist_ok=True)
-                            if dest.is_symlink() or dest.is_file():
-                                dest.unlink()
+                            make_replaceable(dest)
                             shutil.copyfile(source, dest)
                     elif member.issym():
                         links.append((member, dest))

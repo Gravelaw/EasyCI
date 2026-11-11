@@ -60,7 +60,7 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
         number, sha = str(pr.get('number')), head.get('sha')
         if not sha or seen.get(number) == sha:
             continue
-        if (head.get('repo') or {}).get('full_name') != remote:
+        if str((head.get('repo') or {}).get('full_name') or '').lower() != remote.lower():  # GitHub names ignore case
             out.append({'pr': int(number), 'sha': sha, 'skipped': 'from a fork; never run automatically'})
             seen[number] = sha
             continue

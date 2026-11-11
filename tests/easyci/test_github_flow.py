@@ -146,6 +146,15 @@ class Watch(EasyCITest):
         self.assertEqual([j['state'] for j in data['jobs']], ['passed'], data)
         self.assertIn('base_ref=release', (self.run_dir(data['run_id']) / 'jobs/t/log.txt').read_text())
 
+    def test_repository_names_compare_without_case(self):
+        # Review finding: Owner/Repo from the API against owner/repo in the URL looked like a fork.
+        repo = self.make_repo(QUICK, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        os.environ['FAKE_GH_PULLS'] = json.dumps([pull(9, head, repo='Owner/Repo', base=head)])
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual([s['pr'] for s in doc['data']['started']], [9], doc)
+        self.wait(doc['data']['started'][0]['run_id'])
+
     def test_watch_needs_a_github_remote(self):
         repo = self.make_repo(QUICK)
         code, doc, _ = self.call('watch', '--repo', repo, '--once')
