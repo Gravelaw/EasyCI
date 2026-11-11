@@ -211,8 +211,12 @@ def applies(doc, path, inp):
 def github_context(inp):
     ref_name = inp['ref_name']
     repository, default = inp.get('repository') or '', inp.get('default_branch') or ''
-    gh = {'sha': inp['commit'], 'ref': ref_name if ref_name.startswith('refs/') else f'refs/heads/{ref_name}',
-          'ref_name': ref_name, 'ref_type': 'branch', 'repository': repository,
+    ref = ref_name if ref_name.startswith('refs/') else f'refs/heads/{ref_name}'
+    # As on GitHub: refs/tags/v1 is ref_type tag with ref_name v1; refs/heads/x is branch x.
+    ref_type = 'tag' if ref.startswith('refs/tags/') else 'branch'
+    short = ref.split('/', 2)[2] if ref.startswith(('refs/tags/', 'refs/heads/')) else ref_name
+    gh = {'sha': inp['commit'], 'ref': ref,
+          'ref_name': short, 'ref_type': ref_type, 'repository': repository,
           'repository_owner': repository.split('/')[0] if '/' in repository else '', 'event_name': inp['event'],
           'server_url': 'https://github.com', 'head_ref': '', 'base_ref': '',
           'event': {'repository': {'default_branch': default}}}

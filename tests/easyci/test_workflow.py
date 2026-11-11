@@ -361,3 +361,12 @@ class ServicesAndEnv(unittest.TestCase):
         native = self.plan('jobs:\n  db:\n    services: {postgres: {}}\n', backend='native')['jobs'][0]
         self.assertEqual(native['predicted'], 'unsupported')
         self.assertEqual(native['predicted_reason'], 'unsupported_services:postgres needs a wsl backend')
+
+
+class RefContext(unittest.TestCase):
+    def test_tag_refs_are_tags(self):
+        # Review finding: --ref refs/tags/v1 reported github.ref_type branch.
+        g = workflow.github_context({'ref_name': 'refs/tags/v1', 'commit': 'c' * 40, 'event': 'push', 'base': 'b'})
+        self.assertEqual((g['ref'], g['ref_name'], g['ref_type']), ('refs/tags/v1', 'v1', 'tag'))
+        g = workflow.github_context({'ref_name': 'main', 'commit': 'c' * 40, 'event': 'push', 'base': 'b'})
+        self.assertEqual((g['ref'], g['ref_name'], g['ref_type']), ('refs/heads/main', 'main', 'branch'))
