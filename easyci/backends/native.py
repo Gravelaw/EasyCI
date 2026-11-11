@@ -76,6 +76,8 @@ class Native:
                 continue
             code, text = run_quiet([exe, *cmd[1:]], timeout=30, env=env)
             out[tool] = text.splitlines()[0] if code == 0 and text else None
+        if 'julia' in tools:  # recorded for reproducibility (spec section 13)
+            out['julia_depot'] = os.environ.get('JULIA_DEPOT_PATH') or str(pathlib.Path.home() / '.julia')
         return out
 
     def to_backend_path(self, win_path):

@@ -470,6 +470,24 @@ jobs:
         code, data = self.wait(self.start(self.make_repo(workflow, {'data.txt': 'x\n'}), '--no-report')['run_id'])
         self.assertEqual((code, data['state']), (0, 'passed'), data)
 
+    def test_waits_for_a_busy_external_runner(self):
+        import pathlib
+        os.environ['EASYCI_BUSY_POLL_S'] = '0.2'
+        workflow = 'on: push\njobs:\n  q:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ran\n'
+        repo = self.make_repo(workflow, {'easyci.yml': 'busy_paths: [artifacts/*/summary.json]\n'})
+        summary = pathlib.Path(repo) / 'artifacts' / 'manual-run' / 'summary.json'
+        summary.parent.mkdir(parents=True)
+        summary.write_text('{"status": "running"}')
+        run = self.start(repo, '--no-report')
+        rd = self.run_dir(run['run_id'])
+        self.until(lambda: store.read_json(rd / 'run.json').get('waiting_for'))
+        code, doc, _ = self.call('status', run['run_id'])
+        self.assertEqual(doc['data']['state'], 'preparing')
+        self.assertIn('artifacts/manual-run/summary.json', doc['data']['plain'])
+        summary.write_text('{"status": "passed"}')
+        code, data = self.wait(run['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'
@@ -492,8 +510,9 @@ jobs:
         code, doc, _ = self.call('status', run['run_id'])
         self.assertEqual(doc['data']['state'], 'interrupted')
         self.assertFalse(store.lock_dir().exists())
-        self.assertFalse(store.pid_alive(child), 'leftover step tree killed by the reaper')
-        self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
+        # TerminateProcess returns before the process is gone; allow it a moment under load.
+        self.until(lambda: not store.pid_alive(child), timeout=10)  # leftover step tree killed by the reaper
+        self.until(lambda: not store.pid_alive(self.sleep_pid(rd)), timeout=10)
         self.assertEqual(self.final_statuses()['easyci/slow'][0], 'error')
         self.assertEqual(self.final_statuses()['easyci'][0], 'error')
         code, doc, _ = self.call('wait', run['run_id'])

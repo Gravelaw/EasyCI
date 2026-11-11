@@ -100,9 +100,12 @@ class Wsl:
             flag = '-version' if tool == 'java' else 'version' if tool == 'go' else '-L' if tool == 'nvidia-smi' else '--version'
             lines.append(f'printf "%s=" {shlex.quote(tool)}; if command -v {shlex.quote(exe)} >/dev/null; then '
                          f'{shlex.quote(exe)} {flag} 2>&1 | head -n 1; else echo; fi')
+        if 'julia' in tools:
+            lines.append('printf "julia_depot=%s\\n" "${JULIA_DEPOT_PATH:-$HOME/.julia}"')
         code, text = wsl_run(self.distro, '\n'.join(lines), timeout=120)
         found = dict(line.split('=', 1) for line in text.splitlines() if '=' in line) if code == 0 else {}
-        return {tool: (found.get(tool) or '').strip() or None for tool in tools}
+        keys = [*tools, 'julia_depot'] if 'julia' in tools else tools
+        return {tool: (found.get(tool) or '').strip() or None for tool in keys}
 
     def to_backend_path(self, win_path):
         return to_linux(win_path)

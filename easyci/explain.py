@@ -57,6 +57,16 @@ def github_clause(run, gh):
     return f'Reported to GitHub: not yet; run `easyci report {run["run_id"]}`.'
 
 
+def metrics_clause(jobs, limit=4):
+    """' Metrics: accuracy 0.934, train_time_s 1812.' from the jobs' easyci-metrics.json, or ''."""
+    items = [f'{k} {v}' for j in jobs for k, v in (j.get('metrics') or {}).items()
+             if isinstance(v, (int, float, str)) and not isinstance(v, bool)]
+    if not items:
+        return ''
+    more = f' (+{len(items) - limit} more)' if len(items) > limit else ''
+    return f' Metrics: {", ".join(items[:limit])}{more}.'
+
+
 def plain(run, gh=None, behind_job=None):
     state, rid, jobs = run.get('state'), run.get('run_id'), counted(run)
     so_far = minutes_text(store.elapsed(run))
@@ -65,6 +75,9 @@ def plain(run, gh=None, behind_job=None):
         return (f'Waiting for the previous run to finish (it is on job {behind_job}).' if behind_job
                 else 'Waiting for the previous run to finish.')
     if state == 'preparing':
+        if run.get('waiting_for'):
+            return (f'Waiting for another test run on this project to finish ({run["waiting_for"]}); '
+                    'EasyCI starts by itself once it is done.')
         return 'Getting a clean copy of your code ready.'
     if state == 'running':
         live = next((j for j in jobs if j.get('state') == 'running'), None)
@@ -80,7 +93,7 @@ def plain(run, gh=None, behind_job=None):
         return text
     first = lambda *states: next((j for j in jobs if j.get('state') in states), None)  # noqa: E731
     if state == 'passed':
-        return f'All checks passed in {so_far}. {github_clause(run, gh)}'
+        return f'All checks passed in {so_far}. {github_clause(run, gh)}{metrics_clause(jobs)}'
     if state == 'failed':
         job = first('failed', 'interrupted')
         if job and job.get('reason') == 'stalled':

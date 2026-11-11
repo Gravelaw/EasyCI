@@ -62,6 +62,19 @@ def write_json(path, data):
     os.replace(tmp, path)
 
 
+def remove_file(path):
+    """unlink, retried: Windows refuses to delete a file while another process (a `status` or the
+    reaper reading it) has it open, which made a finishing run fail with WinError 32."""
+    path = pathlib.Path(path)
+    for _ in range(100):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            time.sleep(0.02)
+    path.unlink(missing_ok=True)
+
+
 def read_json(path, default=None):
     for _ in range(50):
         try:
@@ -202,7 +215,7 @@ def ticket_run(path):
 def remove_ticket(run_id):
     for path in tickets():
         if ticket_run(path) == run_id:
-            path.unlink(missing_ok=True)
+            remove_file(path)
 
 
 def try_lock(run_id, pid):
@@ -221,7 +234,7 @@ def lock_owner():
 def release_lock(run_id):
     owner = lock_owner()
     if owner and owner.get('run_id') == run_id:
-        (lock_dir() / 'owner.json').unlink(missing_ok=True)
+        remove_file(lock_dir() / 'owner.json')
         try:
             lock_dir().rmdir()
         except OSError:
@@ -276,7 +289,7 @@ def reap(exclude=None):
     for path in tickets():
         rd = find_run(ticket_run(path))
         if not rd or (read_json(rd / 'run.json') or {}).get('state') not in LIVE:
-            path.unlink(missing_ok=True)
+            remove_file(path)
     return reaped
 
 
@@ -386,6 +399,22 @@ def verify(rd):
     for rel in sorted(set(actual) - set(expected)):
         mismatches.append({'path': rel, 'problem': 'extra'})
     return mismatches
+
+
+def busy_file(repo, patterns, stale_s):
+    """Repository-relative path of a busy runner summary matching patterns, or None."""
+    root, now = pathlib.Path(repo), time.time()
+    for pattern in patterns:
+        for path in sorted(root.glob(str(pattern).replace('\\', '/'))):
+            try:
+                if not path.is_file() or json.loads(path.read_text(encoding='utf-8')).get('status') != 'running':
+                    continue
+                newest = max([p.stat().st_mtime for p in path.parent.rglob('*') if p.is_file()] or [0])
+            except (OSError, ValueError, AttributeError):
+                continue
+            if now - newest < stale_s:
+                return path.relative_to(root).as_posix()
+    return None
 
 
 def remove_backend_workspaces(rd, run):

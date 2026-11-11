@@ -117,3 +117,16 @@ class JsonDiscipline(EasyCITest):
         self.assertEqual(json.loads(result.stdout)['error']['code'], 'RUN_NOT_FOUND')
         result = self.subprocess_cli('--version')
         self.assertIn('easyci', result.stdout)
+
+    def test_explain_survives_a_legacy_console_code_page(self):
+        # The Node test runner prints U+2139 (info sign); cp1252 cannot encode it.
+        failing = 'on: push\njobs:\n  quick:\n    runs-on: ubuntu-latest\n    steps:\n' \
+                  '      - uses: actions/checkout@v4\n      - run: python say.py\n'
+        say = 'import sys\nsys.stdout.buffer.write("\\u2139 fail 1\\n".encode("utf-8"))\nsys.exit(1)\n'
+        repo = self.make_repo(failing, files={'say.py': say}, name='unicode-repo')
+        code, doc, _ = self.call('run', '--repo', repo, '--backend', 'native', '--wait')
+        self.assertEqual(doc['data']['state'], 'failed', doc)
+        run_id = doc['data']['run_id']
+        result = self.subprocess_cli('explain', run_id, extra_env={'PYTHONIOENCODING': 'cp1252'})
+        self.assertNotIn('hit a bug', result.stdout + result.stderr)
+        self.assertIn('? fail 1', result.stdout)  # the info sign, replaced rather than fatal

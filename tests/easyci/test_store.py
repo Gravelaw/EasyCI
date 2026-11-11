@@ -51,6 +51,18 @@ class SealAndVerify(EasyCITest):
         self.assertEqual(doc['data']['mismatches'], [{'path': 'jobs/web/log.txt', 'problem': 'changed'}])
 
 
+class LockRelease(EasyCITest):
+    def test_release_waits_for_a_reader_holding_the_owner_file(self):
+        # Seen in the suite: a run failed with WinError 32 because another process was reading
+        # queue.lock/owner.json while the run released the lock.
+        import threading
+        self.assertTrue(store.try_lock('r1', os.getpid()))
+        handle = open(store.lock_dir() / 'owner.json', 'rb')
+        threading.Timer(0.3, handle.close).start()
+        store.release_lock('r1')
+        self.assertFalse(store.lock_dir().exists())
+
+
 class Reaper(EasyCITest):
     def test_dead_supervisor_is_marked_interrupted_and_releases_the_lock(self):
         dead = subprocess.Popen([sys.executable, '-c', 'pass'])
@@ -149,6 +161,13 @@ class Sentences(EasyCITest):
         run.update(extra)
         return run
 
+    def test_metrics_and_busy_wait_sentences(self):
+        run = self.run_obj('passed')
+        run['jobs'][0]['metrics'] = {'accuracy': 0.934, 'train_time_s': 1812}
+        self.assertTrue(explain.plain(run).endswith(' Metrics: accuracy 0.934, train_time_s 1812.'))
+        waiting = explain.plain(self.run_obj('preparing', waiting_for='artifacts/local-ci/x/summary.json'))
+        self.assertTrue(waiting.startswith('Waiting for another test run on this project to finish'), waiting)
+
     def test_every_state_has_one_plain_line(self):
         self.assertEqual(explain.plain(self.run_obj('running')),
                          'Your tests are running: julia (job 2 of 3), step 2 of 2, 12 minutes so far.')
@@ -232,12 +251,15 @@ class Removal(EasyCITest):
                 locked = target / 'sub' / 'pack.idx'
                 locked.write_text('x')
                 os.chmod(locked, stat.S_IREAD)
-                real, used = shutil.rmtree, []
+                real, used, real_version = shutil.rmtree, [], tuple(sys.version_info)
 
                 def spy(path, **kwargs):
                     used.extend(kwargs)
                     if version < (3, 12) and 'onexc' in kwargs:
                         raise TypeError("rmtree() got an unexpected keyword argument 'onexc'")
+                    if 'onexc' in kwargs and real_version < (3, 12):  # the real interpreter is 3.11
+                        handler = kwargs.pop('onexc')
+                        kwargs['onerror'] = lambda func, target_, info: handler(func, target_, info[1])
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore', DeprecationWarning)
                         return real(path, **kwargs)
@@ -272,3 +294,18 @@ class Clean(EasyCITest):
             deleted, _ = store.clean(1)
         self.assertEqual(deleted, [rds[0].name])
         self.assertEqual(calls, ['wsl:test-distro', rds[0].name])
+
+
+class BusyFiles(EasyCITest):
+    def test_only_fresh_running_summaries_are_busy(self):
+        import json as json_
+        repo = self.tmp / 'proj'
+        fresh, stale, done = (repo / 'artifacts' / name / 'summary.json' for name in ('fresh', 'stale', 'done'))
+        for path, status in ((fresh, 'running'), (stale, 'running'), (done, 'passed')):
+            path.parent.mkdir(parents=True)
+            path.write_text(json_.dumps({'status': status}))
+        old = time.time() - 3600
+        os.utime(stale, (old, old))
+        self.assertEqual(store.busy_file(repo, ['artifacts/*/summary.json'], 600), 'artifacts/fresh/summary.json')
+        fresh.write_text(json_.dumps({'status': 'passed'}))
+        self.assertIsNone(store.busy_file(repo, ['artifacts/*/summary.json'], 600))

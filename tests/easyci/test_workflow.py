@@ -58,7 +58,9 @@ class JuliaFlowImport(unittest.TestCase):
             self.assertTrue(j[name]['reported'])
             self.assertEqual(j[name]['backend'], 'native')
             self.assertEqual(len(j[name]['steps']), 1)
-            self.assertIn(f'--job {name} --cache cold', j[name]['steps'][0]['run'])
+            # warm by default; the -cold profiles switch it (EASYCI_PROFILE is set for every step)
+            self.assertIn(f'--job {name} --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"',
+                          j[name]['steps'][0]['run'])
             self.assertEqual(j[name]['toolchains'], [])
         self.assertEqual(j['debian-release-gate']['timeout_minutes'], 180)
         self.assertEqual(j['julia']['stall_minutes'], 45)
@@ -73,6 +75,64 @@ class JuliaFlowImport(unittest.TestCase):
 class Mapping(unittest.TestCase):
     def plan(self, text, cfg=None, **inp):
         return workflow.build_plan(single(text), cfg or {}, {**INP, **inp})
+
+    def test_paths_filters_use_the_changed_files(self):
+        text = ('on:\n  push:\n    paths: ["src/**", "!src/docs/**"]\njobs:\n  t:\n    runs-on: ubuntu-latest\n'
+                '    steps: [{run: x}]\n')
+        run = lambda changed: len(self.plan(text, event='push', ref_name='main', changed=changed)['jobs'])  # noqa: E731
+        self.assertEqual(run(['src/app.py']), 1)
+        self.assertEqual(run(['README.md']), 0)
+        self.assertEqual(run(['src/docs/guide.md']), 0)  # excluded again by the ordered `!` pattern
+        self.assertEqual(run(None), 1)  # nothing to compare with: included, with a note
+        ignore = text.replace('paths: ["src/**", "!src/docs/**"]', 'paths-ignore: ["**.md"]')
+        plan = lambda changed: self.plan(ignore, event='push', ref_name='main', changed=changed)['jobs']  # noqa: E731
+        self.assertEqual(plan(['a.md', 'docs/b.md']), [])
+        self.assertEqual(len(plan(['a.md', 'src/x.py'])), 1)
+
+    def test_globstar_slash_matches_zero_folders(self):
+        # Review finding: `**/` must also match no folder at all, as on GitHub.
+        for pattern, path, expected in (('**/*.py', 'main.py', True), ('**/*.py', 'a/b/main.py', True),
+                                        ('src/**/*.py', 'src/main.py', True), ('src/**/*.py', 'src/a/main.py', True),
+                                        ('src/**/*.py', 'srcx/main.py', False), ('*.py', 'a/main.py', False),
+                                        ('src/**', 'src/a/b', True), ('a.b', 'aXb', False)):
+            self.assertEqual(workflow.glob_match(pattern, path), expected, (pattern, path))
+
+    def test_github_filter_pattern_syntax(self):
+        # Review finding: GitHub's `?` means "zero or one of the preceding character", `+` "one or
+        # more", and `[...]` is a character class (workflow syntax, filter pattern cheat sheet).
+        for pattern, path, expected in (('*.jsx?', 'page.js', True), ('*.jsx?', 'page.jsx', True),
+                                        ('*.jsx?', 'page.jsxx', False), ('v+.txt', 'vvv.txt', True),
+                                        ('v+.txt', '.txt', False), ('[ab]x', 'ax', True), ('[ab]x', 'cx', False),
+                                        ('[a-c]x', 'bx', True), ('[!a]x', 'bx', True), ('[!a]x', 'ax', False),
+                                        ('releases/[0-9]+.0', 'releases/10.0', True), ('a+b', 'a+b', False)):
+            self.assertEqual(workflow.glob_match(pattern, path), expected, (pattern, path))
+
+    def test_changed_files_are_read_raw_not_quoted(self):
+        # Review finding: git quotes non-ASCII names in its default output.
+        import os
+        import subprocess
+        import tempfile
+        from easyci import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            git = lambda *a: subprocess.run(['git', '-C', tmp, '-c', 'user.name=t', '-c', 'user.email=t@t', *a],  # noqa: E731
+                                            check=True, capture_output=True)
+            git('init', '-q')
+            git('commit', '-q', '--allow-empty', '-m', 'base')
+            os.makedirs(os.path.join(tmp, 'src'))
+            for name in ('café.py', 'über ü.py', ' lead.py'):  # Windows forbids tabs in names
+                with open(os.path.join(tmp, 'src', name), 'w') as f:
+                    f.write('x')
+            git('add', '-A')
+            git('commit', '-q', '-m', 'files')
+            changed = snapshot.changed_files(tmp, 'HEAD~1', 'HEAD')
+        self.assertEqual(sorted(changed), sorted(['src/café.py', 'src/über ü.py', 'src/ lead.py']))
+        self.assertTrue(all(workflow.glob_match('src/**', name) for name in changed))
+
+    def test_busy_settings_are_validated(self):
+        workflow.load_config('busy_paths: [artifacts/*/summary.json]\nbusy_stale_minutes: 5\nbusy_wait_minutes: 30\n')
+        for text in ('busy_paths: x', 'busy_paths: [""]', 'busy_stale_minutes: 0', 'busy_wait_minutes: -1'):
+            with self.subTest(text=text), self.assertRaises(ConfigError):
+                workflow.load_config(text)
 
     def test_unknown_action_marks_job_unsupported_with_its_name(self):
         plan = self.plan('on: push\njobs:\n  img:\n    runs-on: ubuntu-latest\n    steps:\n'
