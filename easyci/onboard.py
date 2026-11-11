@@ -63,6 +63,8 @@ def detect(repo):
                       or (root / 'setup.py').exists(),
                       'extras': extras[:1], 'pytest': 'pytest' in text or (root / 'conftest.py').exists()
                       or (root / 'tests' / 'conftest.py').exists(),
+                      # unittest discovery from '.' misses tests/ without an __init__.py: start there.
+                      'test_dir': next((d for d in ('tests', 'test') if (root / d).is_dir()), None),
                       # .python-version pins a version; requires-python only constrains it.
                       'version': major(read(root / '.python-version'), 2),
                       'requires': (re.search(r'requires-python\s*=\s*"([^"]*)"', pyproject) or [None, None])[1]})
@@ -268,7 +270,7 @@ def job_for(stack, have, linux):
         if s['pytest']:
             lines += ['pip install pytest', 'python -m pytest']
         else:
-            lines.append('python -m unittest discover -v')
+            lines.append('python -m unittest discover -v' + (f' -s {s["test_dir"]}' if s.get('test_dir') else ''))
         steps.append('      - name: Install and test\n        run: |\n' + ''.join(f'          {line}\n' for line in lines).rstrip('\n'))
     elif kind == 'julia':
         version = s.get('version') or tool_major(have, 'julia', 2) or '1'

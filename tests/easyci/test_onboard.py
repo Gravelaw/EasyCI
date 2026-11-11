@@ -125,6 +125,21 @@ class Onboarding(EasyCITest):
         code, doc, _ = self.call('setup', '--repo', repo)
         self.assertEqual((code, doc['data']['files']), (0, []))
 
+    def test_unittest_discovery_starts_in_the_tests_folder(self):
+        # Review finding: tests/ without __init__.py was not discovered, so a failing test ran green.
+        import subprocess
+        import sys
+        repo = self.project('ut', {'calc.py': 'def add(a, b):\n    return a - b\n', 'requirements.txt': '',
+                                   'tests/test_calc.py': 'import unittest\nfrom calc import add\n\n\n'
+                                                         'class T(unittest.TestCase):\n    def test_add(self):\n'
+                                                         '        self.assertEqual(add(2, 3), 5)\n'})
+        py = onboard.detect(repo)[0]
+        text = onboard.workflow_text([py], PROBES, True)
+        command = next(line.strip() for line in text.splitlines() if 'unittest discover' in line)
+        self.assertEqual(command, 'python -m unittest discover -v -s tests')
+        result = subprocess.run([sys.executable, *command.split()[1:]], cwd=repo, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stderr)  # the failing test is found and fails
+
     def test_backend_choice_respects_versions(self):
         # Review finding: a distro with Python 3.10 was chosen for a project pinned to 3.12.
         probes = [('wsl:old', lambda tools: {'python': 'Python 3.10.12', 'git': 'git 2'}),
