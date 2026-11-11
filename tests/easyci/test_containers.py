@@ -89,6 +89,27 @@ class Names(unittest.TestCase):
         self.assertNotEqual(a, b)
         self.assertTrue(all(len(n) <= 63 and n.startswith('easyci-20261111-194847-ff8b') for n in (a, b)))
         self.assertEqual(object_name('easyci-x-y', 'db'), 'easyci-x-y-db')
+        # Review finding: names that only differ in characters the normaliser replaces stay apart.
+        self.assertNotEqual(object_name('easyci-x-y', 'redis_primary'), object_name('easyci-x-y', 'redis-primary'))
+
+    def test_job_container_ports_are_published(self):
+        # Review finding: ports on the job container were accepted but never published.
+        from easyci.backends.podman import publish_args
+        self.assertEqual(publish_args(['8080:8080', '9000/udp']),
+                         ['-p', '127.0.0.1:8080:8080', '-p', '127.0.0.1::9000/udp'])
+        from unittest import mock
+        from easyci.backends import podman
+        backend, calls = podman.Podman('boxes'), []
+        with mock.patch.object(backend, 'podman', lambda args, timeout=600: calls.append(args) or (0, '')),                 mock.patch.object(backend, 'mkdirs', lambda ws: None):
+            backend.start_job('r1', 'j', '/w/r1/j', 'C:/runs/r1/jobs/j',
+                              container={'image': 'alpine', 'env': {}, 'ports': ['8080:8080'], 'options': ''},
+                              services={'redis_primary': {'image': 'redis', 'env': {}, 'ports': [], 'options': ''},
+                                        'redis-primary': {'image': 'redis', 'env': {}, 'ports': [], 'options': ''}})
+        runs = [c for c in calls if c[0] == 'run']
+        job = next(c for c in runs if 'tail' in c)
+        self.assertIn('127.0.0.1:8080:8080', job)
+        names = [c[c.index('--name') + 1] for c in runs]
+        self.assertEqual(len(names), len(set(names)), names)
 
     def test_a_service_named_job_is_not_the_job_container(self):
         # Review finding: a service `job` and the job container got the same name.

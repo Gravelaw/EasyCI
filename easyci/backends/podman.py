@@ -58,14 +58,25 @@ def parse_ports(ports):
     return out
 
 
+def publish_args(ports):
+    """`-p` arguments publishing ports on 127.0.0.1 only (a random host port when none is given)."""
+    args = []
+    for cport, hport in parse_ports(ports):
+        args += ['-p', f'127.0.0.1:{hport}:{cport}' if hport else f'127.0.0.1::{cport}']
+    return args
+
+
 def object_name(name, suffix):
     """`<name>-<suffix>` within 63 characters; when that is too long, a hash of the whole keeps names of
     different services apart (truncating would cut the service id away)."""
-    full = f'{name}-{re.sub(r"[^a-z0-9-]+", "-", str(suffix).lower())}'
+    import hashlib
+    clean = re.sub(r'[^a-z0-9-]+', '-', str(suffix).lower())
+    if clean != str(suffix):  # `redis_primary` and `redis-primary` would meet: keep the original apart
+        clean += '-' + hashlib.sha256(str(suffix).encode()).hexdigest()[:6]
+    full = f'{name}-{clean}'
     if len(full) <= 63:
         return full
-    import hashlib
-    return f'{name[:50]}-{hashlib.sha256(full.encode()).hexdigest()[:12]}'
+    return f'{name[:50]}-{hashlib.sha256(f"{name}-{suffix}".encode()).hexdigest()[:12]}'
 
 
 class Podman(Wsl):
@@ -104,8 +115,7 @@ class Podman(Wsl):
             args = ['run', '-d', '--name', cname, '--network', net, '--network-alias', sid]
             for key, value in (spec.get('env') or {}).items():
                 args += ['-e', f'{key}={value}']
-            for cport, hport in parse_ports(spec.get('ports')):
-                args += ['-p', f'127.0.0.1:{hport}:{cport}' if hport else f'127.0.0.1::{cport}']
+            args += publish_args(spec.get('ports'))
             args += parse_options(spec.get('options')) + [spec['image']]
             code, text = self.podman(args, timeout=1800)  # first use pulls the image
             if code != 0:
@@ -122,7 +132,8 @@ class Podman(Wsl):
             mounts = []
             for path in {posixpath.dirname(ws), to_linux(job_dir)}:
                 mounts += ['-v', f'{path}:{path}']
-            args = ['run', '-d', '--name', cname, '--network', net, *mounts, '-w', ws, '--entrypoint', 'tail']
+            args = ['run', '-d', '--name', cname, '--network', net, *mounts, '-w', ws, '--entrypoint', 'tail',
+                    *publish_args(container.get('ports'))]  # the job container's own ports, as for services
             for key, value in (container.get('env') or {}).items():
                 args += ['-e', f'{key}={value}']
             args += parse_options(container.get('options')) + [container['image'], '-f', '/dev/null']
