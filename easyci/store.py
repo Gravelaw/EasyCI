@@ -414,16 +414,34 @@ def verify(rd):
             mismatches.append({'path': rel, 'problem': 'changed'})
     for rel in sorted(set(actual) - set(expected)):
         mismatches.append({'path': rel, 'problem': 'extra'})
-    for rel in sorted(r for r in expected if r.endswith('.pointer.json') and r in actual):  # offloaded artifacts
-        info = read_json(actual[rel]) or {}
-        location = pathlib.Path(info.get('location', ''))
-        for name, value in sorted((info.get('files') or {}).items()):
+    for rel in sorted(r for r in expected if is_pointer_path(r) and r in actual):  # offloaded artifacts
+        info = read_pointer(actual[rel])
+        if info is None:
+            continue  # not a pointer EasyCI wrote; it is checked above like any other sealed file
+        location = pathlib.Path(info['location'])
+        for name, value in sorted(info['files'].items()):
             target = location / name
             if not target.is_file():
                 mismatches.append({'path': f'{rel}:{name}', 'problem': 'missing'})
             elif digest(target) != value:
                 mismatches.append({'path': f'{rel}:{name}', 'problem': 'changed'})
     return mismatches
+
+
+def is_pointer_path(rel):
+    """Only jobs/<job>/artifacts/<name>.pointer.json is EasyCI's; files inside artifacts are content."""
+    parts = str(rel).replace('\\', '/').split('/')
+    return len(parts) == 4 and parts[0] == 'jobs' and parts[2] == 'artifacts' and parts[3].endswith('.pointer.json')
+
+
+def read_pointer(path):
+    """An artifact pointer EasyCI wrote, or None for anything else (wrong kind or shape)."""
+    path = pathlib.Path(path)
+    info = read_json(path) if path.is_file() else None
+    if (isinstance(info, dict) and info.get('kind') == 'artifact-pointer' and isinstance(info.get('location'), str)
+            and isinstance(info.get('files'), dict)):
+        return info
+    return None
 
 
 def artifact_store(project):

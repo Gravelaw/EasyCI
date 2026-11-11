@@ -74,6 +74,32 @@ class Releases(EasyCITest):
         code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'r')
         self.assertEqual((code, doc['error']['code']), (2, 'NOT_PASSED'))
 
+    def test_a_second_upload_replaces_an_offloaded_file(self):
+        # Review finding: after a big first upload was moved out, a small re-upload of the same file
+        # kept the old pointer, and promote published the obsolete big file.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p dist && head -c 1500000 /dev/zero > dist/app.bin\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package, path: dist}\n'
+                    '      - run: echo small > dist/app.bin\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: package, path: dist}\n')
+        repo, run_id = self.passed_run(workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
+        rd = self.run_dir(run_id)
+        self.assertFalse((rd / 'jobs/build/artifacts/package.pointer.json').exists())
+        self.assertEqual(self.call('verify', run_id)[0], 0)
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'rel')
+        self.assertEqual(code, 0, doc)
+        self.assertEqual((pathlib.Path(doc['data']['release']) / 'app.bin').read_text().strip(), 'small')
+
+    def test_pointer_named_files_inside_an_artifact_are_just_content(self):
+        # Review finding: any *.pointer.json was read as EasyCI metadata, so verify crashed or failed.
+        workflow = BUILD.replace('echo "package v1" > dist/app.txt',
+                                 'echo \'["model"]\' > dist/model.pointer.json; mkdir -p dist/x; '
+                                 'echo \'{"files": {"a": "b"}}\' > dist/x/y.pointer.json')
+        repo, run_id = self.passed_run(workflow)
+        self.assertEqual(self.call('verify', run_id)[0], 0)
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'package', '--to', self.tmp / 'rel')
+        self.assertEqual((code, doc['data']['files']), (0, 2), doc)
+
     def test_big_artifacts_live_outside_the_run_but_stay_verified(self):
         workflow = BUILD.replace('echo "package v1" > dist/app.txt', 'head -c 1500000 /dev/zero > dist/big.bin')
         repo, run_id = self.passed_run(workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})

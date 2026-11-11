@@ -615,9 +615,10 @@ class Supervisor:
             with_ = expr.interpolate(step['with'], {**ctx, 'env': {**ctx['env'], **step_env}})
             name = store.artifact_dir_name(with_.get('name') or 'artifact')
             paths = [p for p in str(with_.get('path', '')).splitlines() if p.strip()]
+            self.reclaim_artifact(job_dir, name)
             copied = backend.collect(ws, paths, job_dir / 'artifacts' / name)
             self.marker(f'artifact {name}: {len(copied)} file(s)')
-            if copied:
+            if copied or (job_dir / 'artifacts' / name).is_dir():
                 self.offload_artifact(job_dir, name)
             if not copied and with_.get('if-no-files-found', 'warn') == 'error':
                 self.marker(f'no files found for {paths} (if-no-files-found: error)')
@@ -654,6 +655,20 @@ class Supervisor:
             result['outcome'] = outcome
             return False, result
         return proc.popen.returncode == 0, result
+
+    def reclaim_artifact(self, job_dir, name):
+        """A second upload to an artifact that was moved to the artifact store: bring its files back and
+        drop the pointer, so the new files are added as for any artifact and the whole is sized again.
+        Otherwise the old pointer would win over the newer files at promote time."""
+        pointer = job_dir / 'artifacts' / f'{name}.pointer.json'
+        info = store.read_pointer(pointer)
+        if info is None:
+            return
+        location = pathlib.Path(info['location'])
+        if location.is_dir():
+            shutil.copytree(location, job_dir / 'artifacts' / name, dirs_exist_ok=True)
+            shutil.rmtree(location, ignore_errors=True)
+        store.remove_file(pointer)
 
     def offload_artifact(self, job_dir, name):
         """Move an artifact over artifact_threshold_mb out of the run folder into the artifact store
@@ -714,8 +729,9 @@ class Supervisor:
             return False, {'exit_code': 1}
         roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
         for pointer in sorted((self.rd / 'jobs').glob('*/artifacts/*.pointer.json')):  # offloaded big artifacts
-            location = pathlib.Path((store.read_json(pointer) or {}).get('location', ''))
-            if location.is_dir():
+            info = store.read_pointer(pointer)
+            location = pathlib.Path(info['location']) if info else None
+            if location and location.is_dir():
                 roots.append(location)
         chosen = [p for p in roots if p.name == store.artifact_dir_name(name)] if name else roots
         if name and not chosen:
