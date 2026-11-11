@@ -89,3 +89,13 @@ class ExpressionSubset(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class QuotedBraces(unittest.TestCase):
+    def test_closing_braces_inside_strings_do_not_end_the_expression(self):
+        # Review finding: `}}` inside a quoted argument cut the expression short.
+        ctx = {'github': {}, 'env': {'X': 'v'}}
+        text = "a ${{ fromJSON('{\"a\": {\"b\": 1}}').a.b }} b ${{ format('{{0}}-{0}', env.X) }} c"
+        expr.check_template(text)
+        self.assertEqual(expr.interpolate(text, ctx), 'a 1 b {0}-v c')
+        self.assertEqual(expr.interpolate("${{ 'it''s }}' }}", ctx), "it's }}")
