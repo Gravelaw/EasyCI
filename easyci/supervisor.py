@@ -577,7 +577,7 @@ class Supervisor:
             # Inputs see the job env plus this step's own `env:`, as run scripts do.
             step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
             with_ = expr.interpolate(step['with'], {**ctx, 'env': {**ctx['env'], **step_env}})
-            name = re.sub(r'[^A-Za-z0-9._-]', '_', with_.get('name') or 'artifact')
+            name = store.artifact_dir_name(with_.get('name') or 'artifact')
             paths = [p for p in str(with_.get('path', '')).splitlines() if p.strip()]
             copied = backend.collect(ws, paths, job_dir / 'artifacts' / name)
             self.marker(f'artifact {name}: {len(copied)} file(s)')
@@ -647,14 +647,14 @@ class Supervisor:
             self.marker(f'download path {path!r} must be a relative path inside the workspace; refusing it')
             return False, {'exit_code': 1}
         roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
-        chosen = [p for p in roots if p.name == name] if name else roots
+        chosen = [p for p in roots if p.name == store.artifact_dir_name(name)] if name else roots
         if name and not chosen:
             self.marker(f'artifact {name} was not uploaded earlier in this run')
             return False, {'exit_code': 1}
         total = 0
         for artifact in chosen:  # without a name every artifact lands in its own folder, as on GitHub
-            total += backend.copy_in(artifact, ws, path if name else posixpath.join(path, artifact.name) if path
-                                     else artifact.name)
+            folder = store.artifact_name(artifact.name)
+            total += backend.copy_in(artifact, ws, path if name else posixpath.join(path, folder) if path else folder)
         self.marker(f'downloaded {len(chosen)} artifact(s), {total} file(s)')
         return True, {'outputs': {'download-path': path or '.'}}
 

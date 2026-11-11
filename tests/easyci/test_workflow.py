@@ -296,6 +296,14 @@ jobs:
         self.assertEqual([(j['id'], j['backend']) for j in plan['jobs']],
                          [('t-ubuntu-latest', 'fake'), ('t-windows-latest', 'native')])
 
+    def test_default_shell_follows_the_resolved_matrix_runner(self):
+        # Review finding: `runs-on: ${{ matrix.os }}` on Windows defaulted to bash, not pwsh.
+        text = ('on: push\njobs:\n  t:\n    runs-on: ${{ matrix.os }}\n    strategy:\n'
+                '      matrix: {os: [windows-latest, ubuntu-latest]}\n    steps: [{run: Write-Output ok}]\n')
+        jobs = {j['id']: j for j in self.plan(text, default_backend='fake')['jobs']}
+        self.assertEqual(jobs['t-windows-latest']['steps'][0]['shell'], 'pwsh')
+        self.assertEqual(jobs['t-ubuntu-latest']['steps'][0]['shell'], 'bash')
+
     def test_matrix_from_needs_outputs_is_unsupported(self):
         text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n'
                 '      matrix: ${{ fromJSON(needs.a.outputs.m) }}\n    steps: [{run: echo hi}]\n')

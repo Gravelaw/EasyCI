@@ -604,3 +604,57 @@ jobs:
         log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
         self.assertIn('build=failure/success never=skipped', log)
         self.assertIn('conclusion-gate-passed', log)
+
+
+def exercise_cache(test, cache, ws, write, read, link=None):
+    """Review findings on PR #3: a file path restores, the same key with other paths is a miss (not an
+    exact hit that restores nothing), and hard-linked files come back."""
+    write('state.txt', 'one')
+    test.assertTrue(cache.save(ws, ['state.txt'], 'k1'))
+    write('state.txt', 'changed')
+    test.assertEqual(cache.restore(ws, ['state.txt'], 'k1', []), ('k1', True))
+    test.assertEqual(read('state.txt'), 'one')
+    test.assertEqual(cache.restore(ws, ['other'], 'k1', ['k']), (None, False))
+    write('other/x.txt', 'x')
+    test.assertTrue(cache.save(ws, ['other'], 'k1'))  # same key, other paths: its own entry
+    test.assertEqual(cache.restore(ws, ['other'], 'k1', []), ('k1', True))
+    if link:
+        write('linked/a.txt', 'shared')
+        link('linked/a.txt', 'linked/b.txt')
+        test.assertTrue(cache.save(ws, ['linked'], 'k2'))
+        test.assertEqual(cache.restore(ws + '-new' if isinstance(ws, str) else ws.parent / 'new', ['linked'], 'k2', []),
+                         ('k2', True))
+
+
+class Caches(EasyCITest):
+    def test_native_cache_entries(self):
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        ws.mkdir()
+
+        def write(rel, text):
+            (ws / rel).parent.mkdir(parents=True, exist_ok=True)
+            (ws / rel).write_text(text)
+        c = cache.NativeCache('proj')
+        exercise_cache(self, c, ws, write, lambda rel: (ws / rel).read_text(), link=lambda a, b: os.link(ws / a, ws / b))
+        self.assertEqual(sorted(p.name for p in (self.tmp / 'new' / 'linked').iterdir()), ['a.txt', 'b.txt'])
+        self.assertEqual((self.tmp / 'new' / 'linked' / 'b.txt').read_text(), 'shared')
+
+
+class ArtifactNames(EasyCITest):
+    def test_names_with_spaces_and_the_name_evidence_round_trip(self):
+        # Review findings: `test results` was stored as test_results but looked up unchanged, and an
+        # upload named `evidence` was hidden behind EasyCI's own evidence folder.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p out && echo payload > out/result.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: test results, path: out}\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: evidence, path: out}\n'
+                    '  use:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: test results, path: a}\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: evidence, path: b}\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {path: all}\n'
+                    '      - run: cat a/result.txt b/result.txt all/evidence/result.txt all/test_results/result.txt\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/use/log.txt').read_text()
+        self.assertEqual(log.count('payload'), 4, log)
