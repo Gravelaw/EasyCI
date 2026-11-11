@@ -798,3 +798,44 @@ class CacheCrossLinks(EasyCITest):
         new.mkdir()
         self.assertEqual(c.restore(new, ['a', 'b'], 'k', []), ('k', True))
         self.assertEqual((new / 'b' / 'f').read_text(), 'shared')
+
+
+class CacheReadOnly(EasyCITest):
+    def test_restore_over_read_only_files(self):
+        # Review finding: restoring over a read-only file raised PermissionError.
+        import stat
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'deps').mkdir(parents=True)
+        f = ws / 'deps' / 'lock.txt'
+        f.write_text('cached')
+        os.chmod(f, stat.S_IREAD)
+        c = cache.NativeCache('ro')
+        self.assertTrue(c.save(ws, ['deps'], 'k'))
+        self.assertEqual(c.restore(ws, ['deps'], 'k', []), ('k', True))
+        self.assertEqual(f.read_text(), 'cached')
+        os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+
+
+class CacheStreaming(EasyCITest):
+    def test_restore_copies_in_chunks(self):
+        # Review finding: each cached file was read whole into memory on restore.
+        import tarfile
+        from unittest import mock
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'deps').mkdir(parents=True)
+        (ws / 'deps' / 'big.bin').write_bytes(b'x' * (3 << 20))
+        c = cache.NativeCache('stream')
+        self.assertTrue(c.save(ws, ['deps'], 'k'))
+        (ws / 'deps' / 'big.bin').unlink()
+        sizes = []
+        real = tarfile.ExFileObject.read
+
+        def spy(self, size=-1):
+            sizes.append(size)
+            return real(self, size)
+        with mock.patch.object(tarfile.ExFileObject, 'read', spy):
+            self.assertEqual(c.restore(ws, ['deps'], 'k', []), ('k', True))
+        self.assertEqual((ws / 'deps' / 'big.bin').stat().st_size, 3 << 20)
+        self.assertNotIn(-1, sizes)
