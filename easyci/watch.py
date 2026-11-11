@@ -43,7 +43,9 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
     if not me and not all_authors:  # never fall back to running everyone's code
         raise cli.Fail(3, 'GH_FAILED', 'Could not find out which GitHub user you are, so EasyCI cannot tell your '
                        "pull requests from other people's.", 'Run: gh auth status (or pass --all-authors on purpose)')
-    pulls = github.gh_json(['api', f'repos/{remote}/pulls?state=open&per_page=100'])
+    # Every page: a repository can have more than 100 open pull requests.
+    pages = github.gh_json(['api', '--paginate', '--slurp', f'repos/{remote}/pulls?state=open&per_page=100'])
+    pulls = None if pages is None else [pr for page in pages for pr in (page or [])]
     if pulls is None:
         raise cli.Fail(3, 'GH_FAILED', 'Could not list pull requests with gh.', 'Run: gh auth status')
     slug = store.project_slug(repo)

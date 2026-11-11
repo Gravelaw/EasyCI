@@ -53,9 +53,12 @@ class Onboarding(EasyCITest):
 
     def test_details_feed_the_template(self):
         node = onboard.detect(self.project('n', PROJECTS['node']))[0]
-        self.assertEqual((node['manager'], node['locked'], node['version']), ('npm', True, '22'))
+        self.assertEqual((node['manager'], node['locked'], node['version'], node['requires']), ('npm', True, None, '>=22'))
         text = onboard.workflow_text([node], PROBES, True)
-        self.assertIn('node-version: 22', text)
+        # Review finding: engines.node is a constraint; the installed Node 26 meets >=22, so it is requested.
+        self.assertIn('node-version: 26', text)
+        self.assertIn('node-version: 20', onboard.workflow_text([{**node, 'requires': '^20'}], PROBES, True))
+        self.assertIn('node-version: 18', onboard.workflow_text([{**node, 'version': '18'}], PROBES, True))  # .nvmrc pins
         self.assertLess(text.index('npm ci'), text.index('npm run lint'))
         self.assertLess(text.index('npm run build'), text.index('npm run test'))
         self.assertIn('corepack enable && pnpm install --frozen-lockfile',

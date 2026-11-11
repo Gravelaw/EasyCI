@@ -116,6 +116,18 @@ class Watch(EasyCITest):
         code, data = self.wait(started[0]['run_id'])
         self.assertEqual([j['state'] for j in data['jobs']], ['passed'], data)
 
+    def test_pull_requests_beyond_the_first_page_are_seen(self):
+        # Review finding: only the first 100 open pull requests were considered.
+        repo = self.make_repo(QUICK, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        others = [pull(n, head, login='colleague', base=head) for n in range(1, 151)]
+        listing = self.tmp / 'pulls.json'
+        listing.write_text(json.dumps(others + [pull(151, head, base=head)]))
+        os.environ['FAKE_GH_PULLS_FILE'] = str(listing)
+        code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual([s['pr'] for s in doc['data']['started']], [151], doc['data']['started'])
+        self.wait(doc['data']['started'][0]['run_id'])
+
     def test_watch_needs_a_github_remote(self):
         repo = self.make_repo(QUICK)
         code, doc, _ = self.call('watch', '--repo', repo, '--once')

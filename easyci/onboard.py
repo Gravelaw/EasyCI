@@ -46,11 +46,11 @@ def detect(repo):
             pkg = {}
         manager = ('pnpm' if (root / 'pnpm-lock.yaml').exists() else 'yarn' if (root / 'yarn.lock').exists()
                    else 'npm')
-        version = (read(root / '.nvmrc').strip() or read(root / '.node-version').strip() or
-                   str((pkg.get('engines') or {}).get('node', '')))
+        # .nvmrc / .node-version pin a version; package.json engines.node only constrains it.
+        pinned = read(root / '.nvmrc').strip() or read(root / '.node-version').strip()
         found.append({'stack': 'node', 'manager': manager, 'scripts': sorted((pkg.get('scripts') or {})),
                       'locked': any((root / f).exists() for f in ('package-lock.json', 'pnpm-lock.yaml', 'yarn.lock')),
-                      'version': major(version)})
+                      'version': major(pinned), 'requires': str((pkg.get('engines') or {}).get('node', '')) or None})
     py_files = [f for f in ('pyproject.toml', 'setup.py', 'setup.cfg', 'requirements.txt') if (root / f).exists()]
     if py_files:
         text = ' '.join(read(root / f) for f in (*py_files, 'requirements-dev.txt', 'requirements-test.txt',
@@ -159,6 +159,43 @@ def satisfies(version, spec):
     return True
 
 
+def node_satisfies(version, spec):
+    """Does a Node version meet an npm semver range such as `>=20`, `^20.3`, `20.x`, `>=18 <23 || 24`?"""
+    have = (version_tuple(version) + (0, 0, 0))[:3]
+    for branch in str(spec).split('||'):
+        tokens = re.findall(r'(>=|<=|>|<|=|\^|~)?\s*v?(\d+(?:\.(?:\d+|x|\*))*)', branch)
+        if not tokens:
+            continue
+        ok = True
+        for op, text in tokens:
+            parts = [int(p) for p in re.findall(r'\d+', text.split('x')[0].split('*')[0])]
+            low = (parts + [0, 0, 0])[:3]
+            if op in ('', '=') and len(parts) < 3:  # `20`, `20.x`, `20.3`: that prefix
+                ok = ok and have[:len(parts)] == tuple(parts)
+            elif op == '^':
+                upper = [low[0] + 1, 0, 0] if low[0] else [0, low[1] + 1, 0]
+                ok = ok and tuple(low) <= have < tuple(upper)
+            elif op == '~':
+                upper = [low[0], low[1] + 1, 0] if len(parts) > 1 else [low[0] + 1, 0, 0]
+                ok = ok and tuple(low) <= have < tuple(upper)
+            else:
+                ok = ok and {'>=': have >= tuple(low), '>': have > tuple(low), '<=': have <= tuple(low),
+                             '<': have < tuple(low), '=': have == tuple(low), '': have == tuple(low)}[op]
+        if ok:
+            return True
+    return False
+
+
+def node_for(requires, installed):
+    """The installed Node's major when it meets engines.node, else the lowest major the range names."""
+    if not requires:
+        return None
+    if installed and node_satisfies(installed, requires):
+        return major(installed)
+    m = re.search(r'\d+', requires)
+    return m.group(0) if m else None
+
+
 def python_for(requires, installed):
     """The version for setup-python: the installed one when it meets requires-python, else the lowest
     version the constraint allows (its >=, ~= or == bound)."""
@@ -175,7 +212,7 @@ def job_for(stack, have, linux):
     steps = ['      - uses: actions/checkout@v4']
     py = 'python3' if linux else 'python'
     if kind == 'node':
-        version = s.get('version') or tool_major(have, 'node') or '20'
+        version = s.get('version') or node_for(s.get('requires'), have.get('node')) or tool_major(have, 'node') or '20'
         steps.append(f'      - uses: actions/setup-node@v4\n        with:\n          node-version: {version}')
         if s['manager'] == 'npm':
             install = 'npm ci' if s['locked'] else 'npm install'
