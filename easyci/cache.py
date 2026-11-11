@@ -139,7 +139,7 @@ class NativeCache:
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         make_replaceable(dest)
                         with tar.extractfile(member) as src, open(dest, 'wb') as out:
-                            out.write(src.read())
+                            shutil.copyfileobj(src, out, 1 << 20)  # in chunks: members can be gigabytes
                     elif member.islnk() and (member.linkname == prefix or member.linkname.startswith(prefix + '/')):
                         # a hard link to a file stored earlier in this path: restore it as a copy
                         source = target / member.linkname[len(prefix):].lstrip('/')
