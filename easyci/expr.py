@@ -1,7 +1,12 @@
-"""The `${{ }}` expression subset of spec section 8.3: parse, validate, evaluate.
+"""The `${{ }}` expression language of spec section 8.3 (Phase 1 scope): parse, validate, evaluate.
 
-Anything outside the subset raises Unsupported with the expression text, never a guess.
+Supported: literals, `==` `!=` `<` `<=` `>` `>=` `!` `&&` `||`, parentheses, property access
+(`a.b`, `a['b']`, `a[0]`), the status functions `success()` `failure()` `always()` `cancelled()`,
+and `contains` `startsWith` `endsWith` `format` `join` `toJSON` `fromJSON` `hashFiles`.
+Contexts: `github` (the keys EasyCI fills in), `env`, `runner`, `needs`, `steps`, `matrix`,
+`strategy`, `job`. Anything else raises Unsupported with the expression text, never a guess.
 """
+import json
 import math
 import re
 
@@ -11,11 +16,20 @@ class Unsupported(Exception):
 
 
 TOKEN = re.compile(r"\s*(?:(?P<num>-?\d+(?:\.\d+)?)\b|(?P<str>'(?:[^']|'')*')|"
-                   r"(?P<op>==|!=|&&|\|\||<=|>=|[!()<>,.\[\]])|(?P<id>[A-Za-z_][A-Za-z0-9_-]*))")
-FUNCTIONS = ('always', 'success', 'failure')
-GITHUB = {('sha',), ('ref',), ('ref_name',), ('repository',), ('event_name',),
-          ('event', 'pull_request', 'head', 'sha'), ('event', 'pull_request', 'base', 'sha')}
-TEMPLATE = re.compile(r'\$\{\{(.*?)\}\}', re.S)
+                   r"(?P<op>==|!=|&&|\|\||<=|>=|[!()<>,.\[\]*])|(?P<id>[A-Za-z_][A-Za-z0-9_-]*))")
+STATUS = ('always', 'success', 'failure', 'cancelled')
+# name: (min args, max args or None)
+FUNCTIONS = {'contains': (2, 2), 'startsWith': (2, 2), 'endsWith': (2, 2), 'format': (1, None),
+             'join': (1, 2), 'toJSON': (1, 1), 'fromJSON': (1, 1), 'hashFiles': (1, None)}
+# Only keys EasyCI really knows; e.g. github.actor or a PR number would be a guess, so they stay unsupported.
+GITHUB = {('sha',), ('ref',), ('ref_name',), ('ref_type',), ('head_ref',), ('base_ref',), ('repository',),
+          ('repository_owner',), ('event_name',), ('server_url',), ('event', 'pull_request', 'head', 'sha'),
+          ('event', 'pull_request', 'base', 'sha'), ('event', 'repository', 'default_branch')}
+CONTEXTS = ('github', 'env', 'runner', 'needs', 'steps', 'matrix', 'strategy', 'job')
+# `${{ ... }}`: the body may hold '...' strings (with '' escapes) containing `}}`, as in
+# fromJSON('{"a": {"b": 1}}') or format('{{0}}', x); only a `}}` outside quotes ends it.
+TEMPLATE = re.compile(r"\$\{\{((?:[^'}]|'(?:[^']|'')*'|\}(?!\}))*)\}\}", re.S)
+COMPARE = {'==': 'eq', '!=': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge'}
 
 
 def tokenize(text):
@@ -63,27 +77,50 @@ class Parser:
         return node
 
     def and_(self):
-        node = self.equality()
+        node = self.comparison()
         while self.peek() == ('op', '&&'):
             self.take()
-            node = ('and', node, self.equality())
+            node = ('and', node, self.comparison())
         return node
 
-    def equality(self):
-        # `!` binds tighter than `==`/`!=`, as in GitHub: `!a == b` is `(!a) == b`.
+    def comparison(self):
+        # `!` binds tighter than comparisons, as in GitHub: `!a == b` is `(!a) == b`.
         node = self.unary()
-        if self.peek() in (('op', '=='), ('op', '!=')):
+        if self.peek()[0] == 'op' and self.peek()[1] in COMPARE:
             op = self.take()[1]
-            node = ('eq' if op == '==' else 'ne', node, self.unary())
-        if self.peek()[1] in ('<', '>', '<=', '>=', '==', '!='):
-            self.fail()
+            node = (COMPARE[op], node, self.unary())
+        if self.peek()[0] == 'op' and self.peek()[1] in COMPARE:
+            self.fail()  # chained comparisons are not supported
         return node
 
     def unary(self):
         if self.peek() == ('op', '!'):
             self.take()
             return ('not', self.unary())
-        return self.primary()
+        return self.postfix(self.primary())
+
+    def postfix(self, node):
+        path = list(node[1]) if node[0] == 'ctx' else None
+        while self.peek() in (('op', '.'), ('op', '[')):
+            if self.take()[1] == '.':
+                kind, name = self.take()
+                if kind != 'id':
+                    self.fail()
+                key = ('lit', name)
+            else:
+                key = self.or_()
+                self.take(']')
+            if path is not None and key[0] == 'lit' and isinstance(key[1], str):
+                path.append(key[1])
+                node = ('ctx', tuple(path))
+            else:
+                if path is not None:
+                    self.check_context(tuple(path))  # a dynamic index needs a valid context in front of it
+                path = None
+                node = ('index', node, key)
+        if node[0] == 'ctx':
+            self.check_context(node[1])
+        return node
 
     def primary(self):
         kind, value = self.take()
@@ -101,28 +138,33 @@ class Parser:
             return ('lit', {'true': True, 'false': False, 'null': None}[value])
         if self.peek() == ('op', '('):
             self.take()
+            args = []
+            if self.peek() != ('op', ')'):
+                args.append(self.or_())
+                while self.peek() == ('op', ','):
+                    self.take()
+                    args.append(self.or_())
             self.take(')')
-            if value not in FUNCTIONS:
+            if value in STATUS and not args:
+                return ('call', value)
+            low, high = FUNCTIONS.get(value, (None, None))
+            if low is None or len(args) < low or (high is not None and len(args) > high):
                 self.fail()
-            return ('call', value)
-        path = [value]
-        while self.peek() == ('op', '.'):
-            self.take()
-            kind, name = self.take()
-            if kind != 'id':
-                self.fail()
-            path.append(name)
-        if self.peek()[1] == '[':
+            return ('fn', value, tuple(args))
+        if value not in CONTEXTS:
             self.fail()
-        self.check_context(path)
-        return ('ctx', tuple(path))
+        return ('ctx', (value,))
 
     def check_context(self, path):
         head, rest = path[0], tuple(path[1:])
-        ok = ((head == 'github' and rest in GITHUB) or (head == 'env' and len(rest) == 1) or
-              (head == 'runner' and rest == ('os',)) or
-              (head == 'needs' and (len(rest) == 3 and rest[1] == 'outputs' or len(rest) == 2 and rest[1] == 'result')) or
-              (head == 'steps' and len(rest) == 3 and rest[1] == 'outputs'))
+        ok = ((head == 'github' and rest in GITHUB) or (head == 'env' and len(rest) <= 1) or
+              (head == 'runner' and rest in (('os',), ('arch',), ('temp',), ('name',))) or
+              (head == 'needs' and (len(rest) >= 3 and rest[1] == 'outputs' or len(rest) == 2 and rest[1] == 'result')) or
+              (head == 'steps' and (len(rest) == 3 and rest[1] == 'outputs' or
+                                    len(rest) == 2 and rest[1] in ('outcome', 'conclusion'))) or
+              head == 'matrix' or
+              (head == 'strategy' and rest in (('job-index',), ('job-total',), ('fail-fast',), ('max-parallel',)))
+              or (head == 'job' and rest == ('status',)))
         if not ok:
             self.fail()
 
@@ -142,7 +184,7 @@ def parse_condition(text):
 
 
 def check_template(value):
-    """Raise Unsupported if any ${{ }} in value (recursively) is outside the subset."""
+    """Raise Unsupported if any ${{ }} in value (recursively) is outside the language."""
     if isinstance(value, dict):
         for item in value.values():
             check_template(item)
@@ -155,9 +197,14 @@ def check_template(value):
 
 
 def uses_status(node):
-    if node[0] == 'call':
+    kind = node[0]
+    if kind == 'call':
         return True
-    return node[0] in ('not', 'and', 'or', 'eq', 'ne') and any(uses_status(child) for child in node[1:])
+    if kind in ('lit', 'ctx'):
+        return False
+    if kind == 'fn':
+        return any(uses_status(a) for a in node[2])
+    return any(uses_status(child) for child in node[1:])
 
 
 def number(value):
@@ -170,8 +217,9 @@ def number(value):
     if isinstance(value, str):
         if value.strip() == '':
             return 0
+        text = value.strip()
         try:
-            return float(value.strip())
+            return int(text, 16) if text.lower().startswith('0x') else float(text)
         except ValueError:
             return math.nan
     return math.nan
@@ -180,9 +228,21 @@ def number(value):
 def equal(a, b):
     if isinstance(a, str) and isinstance(b, str):
         return a.casefold() == b.casefold()
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return a is b
     if type(a) is type(b):
         return a == b
     return number(a) == number(b)
+
+
+def compare(kind, a, b):
+    if isinstance(a, str) and isinstance(b, str):
+        x, y = a.casefold(), b.casefold()
+    else:
+        x, y = number(a), number(b)
+        if any(isinstance(v, float) and math.isnan(v) for v in (x, y)):
+            return False
+    return {'lt': x < y, 'le': x <= y, 'gt': x > y, 'ge': x >= y}[kind]
 
 
 def truthy(value):
@@ -200,16 +260,79 @@ def to_str(value):
         return 'true' if value else 'false'
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
     return str(value)
 
 
 def lookup(ctx, path):
     value = ctx
     for part in path:
-        if not isinstance(value, dict):
-            return None
-        value = value.get(part)
+        value = index(value, part)
     return value
+
+
+def index(value, key):
+    if isinstance(value, dict):
+        if isinstance(key, str):
+            for k, v in value.items():  # property names are case-insensitive in GitHub
+                if isinstance(k, str) and k.casefold() == key.casefold():
+                    return v
+            return None
+        return value.get(key)
+    if isinstance(value, list) and isinstance(key, (int, float)) and not isinstance(key, bool):
+        i = int(key)
+        return value[i] if 0 <= i < len(value) else None
+    return None
+
+
+def fmt(template, args):
+    out, i = [], 0
+    while i < len(template):
+        if template.startswith('{{', i):
+            out.append('{')
+            i += 2
+        elif template.startswith('}}', i):
+            out.append('}')
+            i += 2
+        elif template[i] == '{':
+            end = template.find('}', i)
+            if end < 0 or not template[i + 1:end].isdigit() or int(template[i + 1:end]) >= len(args):
+                raise Unsupported(f'unsupported_expression:format({template!r})')
+            out.append(to_str(args[int(template[i + 1:end])]))
+            i = end + 1
+        else:
+            out.append(template[i])
+            i += 1
+    return ''.join(out)
+
+
+def call(name, args, ctx):
+    if name == 'contains':
+        search, item = args
+        if isinstance(search, list):
+            return any(equal(v, item) for v in search)
+        return to_str(item).casefold() in to_str(search).casefold()
+    if name == 'startsWith':
+        return to_str(args[0]).casefold().startswith(to_str(args[1]).casefold())
+    if name == 'endsWith':
+        return to_str(args[0]).casefold().endswith(to_str(args[1]).casefold())
+    if name == 'format':
+        return fmt(to_str(args[0]), args[1:])
+    if name == 'join':
+        sep = to_str(args[1]) if len(args) > 1 else ','
+        return sep.join(to_str(v) for v in args[0]) if isinstance(args[0], list) else to_str(args[0])
+    if name == 'toJSON':
+        return json.dumps(args[0], indent=2)
+    if name == 'fromJSON':
+        try:
+            return json.loads(to_str(args[0]))
+        except ValueError:
+            raise Unsupported(f'unsupported_expression:fromJSON({to_str(args[0])[:60]!r})') from None
+    if name == 'hashFiles':
+        hasher = ctx.get('__hash_files__')
+        return hasher([to_str(a) for a in args]) if hasher else ''
+    raise Unsupported(f'unsupported_expression:{name}()')
 
 
 def evaluate(node, ctx):
@@ -218,9 +341,14 @@ def evaluate(node, ctx):
         return node[1]
     if kind == 'ctx':
         return lookup(ctx, node[1])
+    if kind == 'index':
+        return index(evaluate(node[1], ctx), evaluate(node[2], ctx))
     if kind == 'call':
         status = ctx.get('status', 'success')
-        return {'always': True, 'success': status == 'success', 'failure': status == 'failure'}[node[1]]
+        return {'always': True, 'success': status == 'success', 'failure': status == 'failure',
+                'cancelled': status == 'cancelled'}[node[1]]
+    if kind == 'fn':
+        return call(node[1], [evaluate(a, ctx) for a in node[2]], ctx)
     if kind == 'not':
         return not truthy(evaluate(node[1], ctx))
     if kind == 'and':
@@ -229,8 +357,10 @@ def evaluate(node, ctx):
     if kind == 'or':
         left = evaluate(node[1], ctx)
         return left if truthy(left) else evaluate(node[2], ctx)
-    result = equal(evaluate(node[1], ctx), evaluate(node[2], ctx))
-    return result if kind == 'eq' else not result
+    a, b = evaluate(node[1], ctx), evaluate(node[2], ctx)
+    if kind in ('eq', 'ne'):
+        return equal(a, b) if kind == 'eq' else not equal(a, b)
+    return compare(kind, a, b)
 
 
 def condition(text, ctx, default='success()'):
@@ -239,6 +369,21 @@ def condition(text, ctx, default='success()'):
     if not uses_status(node):
         node = ('and', ('call', 'success'), node)
     return truthy(evaluate(node, ctx))
+
+
+def evaluate_value(value, ctx):
+    """Like interpolate, but a string that is exactly one `${{ }}` keeps the expression's type
+    (so `matrix: ${{ fromJSON(...) }}` yields a mapping). Lists and mappings are walked."""
+    if isinstance(value, str):
+        full = TEMPLATE.fullmatch(value.strip())
+        if full:
+            return evaluate(parse(full.group(1)), ctx)
+        return interpolate(value, ctx)
+    if isinstance(value, dict):
+        return {k: evaluate_value(v, ctx) for k, v in value.items()}
+    if isinstance(value, list):
+        return [evaluate_value(v, ctx) for v in value]
+    return value
 
 
 def interpolate(value, ctx):

@@ -1,6 +1,7 @@
 """Real runs through the detached supervisor and the native backend with tiny stub steps."""
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -488,6 +489,65 @@ jobs:
         code, data = self.wait(run['run_id'])
         self.assertEqual((code, data['state']), (0, 'passed'), data)
 
+    def test_matrix_runs_each_combination_with_fail_fast(self):
+        workflow = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: {v: [1, 2, 3]}\n'
+                    '    steps:\n      - run: echo "v=${{ matrix.v }} of ${{ strategy.job-total }}"; test ${{ matrix.v }} != 2\n'
+                    '  after:\n    needs: t\n    if: always()\n    runs-on: ubuntu-latest\n'
+                    "    steps:\n      - run: echo \"t was ${{ needs.t.result }}\"\n")
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        states = {j['name']: (j['state'], j.get('reason')) for j in data['jobs']}
+        self.assertEqual(states, {'t-1': ('passed', None), 't-2': ('failed', 'step_failed'),
+                                  't-3': ('cancelled', 'fail_fast'), 'after': ('passed', None)}, data)
+        rd = self.run_dir(data['run_id'])
+        self.assertIn('v=1 of 3', (rd / 'jobs/t-1/log.txt').read_text())
+        self.assertIn('t was failure', (rd / 'jobs/after/log.txt').read_text())
+        # Without fail-fast every combination runs.
+        repo = self.make_repo(workflow.replace('    strategy:\n', '    strategy:\n      fail-fast: false\n'), name='nofail')
+        code, data = self.wait(self.start(repo, '--no-report', '--backend', 'fake')['run_id'])
+        self.assertEqual({j['name']: j['state'] for j in data['jobs']},
+                         {'t-1': 'passed', 't-2': 'failed', 't-3': 'passed', 'after': 'passed'})
+
+    def test_cache_restore_save_and_prefix_fallback(self):
+        workflow = ('on: push\njobs:\n  c:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/checkout@v4\n'
+                    '      - id: cache\n        uses: actions/cache@v4\n'
+                    "        with: {path: .deps, key: \"deps-${{ hashFiles('lock.txt') }}\", restore-keys: deps-}\n"
+                    '      - run: |\n          echo "hit=${{ steps.cache.outputs.cache-hit }}"\n'
+                    '          if [ -f .deps/built.txt ]; then echo "found $(cat .deps/built.txt)"; '
+                    'else mkdir -p .deps; echo first > .deps/built.txt; echo built; fi\n')
+        repo = self.make_repo(workflow, {'lock.txt': 'v1\n'})
+        logs = []
+        for change in (None, None, 'v2\n'):
+            if change:
+                (pathlib.Path(repo) / 'lock.txt').write_text(change)
+                self.git(repo, 'commit', '-qam', 'bump lock')
+            code, data = self.wait(self.start(repo, '--no-report', '--backend', 'fake')['run_id'])
+            self.assertEqual((code, data['state']), (0, 'passed'), data)
+            logs.append((self.run_dir(data['run_id']) / 'jobs/c/log.txt').read_text())
+        self.assertIn('hit=false', logs[0])
+        self.assertIn('built', logs[0])
+        self.assertIn('hit=true', logs[1])          # exact key: cache-hit true, contents restored
+        self.assertIn('found first', logs[1])
+        self.assertIn('hit=false', logs[2])         # new key: restored from the deps- prefix
+        self.assertIn('found first', logs[2])
+        self.assertIn('restored from deps-', logs[2])
+        entries = list((self.home / 'cache').rglob('*.tar'))
+        self.assertEqual(len(entries), 2, entries)  # one entry per distinct key
+
+    def test_download_artifact_between_jobs(self):
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p out && echo payload > out/result.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: res, path: out}\n'
+                    '  use:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: res, path: got}\n'
+                    '      - run: test "$(cat got/result.txt)" = payload\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: missing}\n        continue-on-error: true\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/use/log.txt').read_text()
+        self.assertIn('downloaded 1 artifact(s), 1 file(s)', log)
+        self.assertIn('artifact missing was not uploaded earlier in this run', log)
+
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'
                     '      - uses: actions/checkout@v4\n        with: {path: "${{ env.SOURCE_DIR }}"}\n'
@@ -517,3 +577,188 @@ jobs:
         self.assertEqual(self.final_statuses()['easyci'][0], 'error')
         code, doc, _ = self.call('wait', run['run_id'])
         self.assertEqual(code, 6)
+
+
+class StepConclusions(EasyCITest):
+    def test_steps_context_has_outcome_and_conclusion(self):
+        # Review finding: steps.<id>.conclusion was accepted but always empty.
+        wf = """\
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - id: build
+        run: exit 3
+        continue-on-error: true
+      - id: never
+        if: false
+        run: echo unreachable
+      - run: echo "build=${{ steps.build.outcome }}/${{ steps.build.conclusion }} never=${{ steps.never.conclusion }}"
+      - if: steps.build.conclusion == 'success'
+        run: echo conclusion-gate-passed
+"""
+        repo = self.make_repo(wf)
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertEqual(data['state'], 'passed', data)
+        log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
+        self.assertIn('build=failure/success never=skipped', log)
+        self.assertIn('conclusion-gate-passed', log)
+
+
+def exercise_cache(test, cache, ws, write, read, link=None):
+    """Review findings on PR #3: a file path restores, the same key with other paths is a miss (not an
+    exact hit that restores nothing), and hard-linked files come back."""
+    write('state.txt', 'one')
+    test.assertTrue(cache.save(ws, ['state.txt'], 'k1'))
+    write('state.txt', 'changed')
+    test.assertEqual(cache.restore(ws, ['state.txt'], 'k1', []), ('k1', True))
+    test.assertEqual(read('state.txt'), 'one')
+    test.assertEqual(cache.restore(ws, ['other'], 'k1', ['k']), (None, False))
+    write('other/x.txt', 'x')
+    test.assertTrue(cache.save(ws, ['other'], 'k1'))  # same key, other paths: its own entry
+    test.assertEqual(cache.restore(ws, ['other'], 'k1', []), ('k1', True))
+    if link:
+        write('linked/a.txt', 'shared')
+        link('linked/a.txt', 'linked/b.txt')
+        test.assertTrue(cache.save(ws, ['linked'], 'k2'))
+        test.assertEqual(cache.restore(ws + '-new' if isinstance(ws, str) else ws.parent / 'new', ['linked'], 'k2', []),
+                         ('k2', True))
+
+
+class Caches(EasyCITest):
+    def test_native_cache_entries(self):
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        ws.mkdir()
+
+        def write(rel, text):
+            (ws / rel).parent.mkdir(parents=True, exist_ok=True)
+            (ws / rel).write_text(text)
+        c = cache.NativeCache('proj')
+        exercise_cache(self, c, ws, write, lambda rel: (ws / rel).read_text(), link=lambda a, b: os.link(ws / a, ws / b))
+        self.assertEqual(sorted(p.name for p in (self.tmp / 'new' / 'linked').iterdir()), ['a.txt', 'b.txt'])
+        # Review finding: restoring over the original folder, where the hard links already are, must work.
+        self.assertEqual(c.restore(ws, ['linked'], 'k2', []), ('k2', True))
+        self.assertEqual((ws / 'linked' / 'b.txt').read_text(), 'shared')
+        self.assertEqual((self.tmp / 'new' / 'linked' / 'b.txt').read_text(), 'shared')
+
+
+class ArtifactNames(EasyCITest):
+    def test_names_with_spaces_and_the_name_evidence_round_trip(self):
+        # Review findings: `test results` was stored as test_results but looked up unchanged, and an
+        # upload named `evidence` was hidden behind EasyCI's own evidence folder.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: mkdir -p out && echo payload > out/result.txt\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: test results, path: out}\n'
+                    '      - uses: actions/upload-artifact@v4\n        with: {name: evidence, path: out}\n'
+                    '  use:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: test results, path: a}\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {name: evidence, path: b}\n'
+                    '      - uses: actions/download-artifact@v4\n        with: {path: all}\n'
+                    '      - run: cat a/result.txt b/result.txt all/evidence/result.txt all/test_results/result.txt\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/use/log.txt').read_text()
+        self.assertEqual(log.count('payload'), 4, log)
+
+
+class CacheLinks(EasyCITest):
+    def test_symlinks_in_a_native_cache_come_back(self):
+        # Review finding: symbolic links in a cached folder were silently dropped on restore.
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'deps' / 'bin').mkdir(parents=True)
+        (ws / 'deps' / 'tool.txt').write_text('real')
+        try:
+            os.symlink('../tool.txt', ws / 'deps' / 'bin' / 'tool')
+        except OSError:
+            self.skipTest('this Windows account cannot create symbolic links')
+        c = cache.NativeCache('links')
+        self.assertTrue(c.save(ws, ['deps'], 'k'))
+        new = self.tmp / 'new'
+        new.mkdir()
+        self.assertEqual(c.restore(new, ['deps'], 'k', []), ('k', True))
+        self.assertEqual((new / 'deps' / 'bin' / 'tool').read_text(), 'real')
+        # Review finding: restoring over the original folder (the link already there) must not fail.
+        self.assertEqual(c.restore(ws, ['deps'], 'k', []), ('k', True))
+        self.assertEqual(c.restore(new, ['deps'], 'k', []), ('k', True))
+        self.assertTrue((new / 'deps' / 'bin' / 'tool').is_symlink())
+        # Without permission to create links, a link inside the folder becomes a copy.
+        from unittest import mock
+        other = self.tmp / 'other'
+        other.mkdir()
+        with mock.patch.object(cache.os, 'symlink', side_effect=OSError('not permitted')):
+            c.restore(other, ['deps'], 'k', [])
+        self.assertEqual((other / 'deps' / 'bin' / 'tool').read_text(), 'real')
+        self.assertFalse((other / 'deps' / 'bin' / 'tool').is_symlink())
+
+
+class JobStatusOutput(EasyCITest):
+    def test_job_status_output_after_a_failing_last_step(self):
+        # Review finding: an output `${{ job.status }}` said success although the last step failed.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    outputs:\n'
+                    '      result: ${{ job.status }}\n    steps:\n      - run: exit 1\n'
+                    '  report:\n    needs: build\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: echo "build said ${{ needs.build.outputs.result }}"\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        log = (self.run_dir(data['run_id']) / 'jobs/report/log.txt').read_text()
+        self.assertIn('build said failure', log)
+
+
+class CacheCrossLinks(EasyCITest):
+    def test_hard_links_across_cached_paths(self):
+        # Review finding: b/f hard-linked to a/f was stored as a link into a's prefix and dropped.
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'a').mkdir(parents=True)
+        (ws / 'b').mkdir()
+        (ws / 'a' / 'f').write_text('shared')
+        os.link(ws / 'a' / 'f', ws / 'b' / 'f')
+        c = cache.NativeCache('cross')
+        self.assertTrue(c.save(ws, ['a', 'b'], 'k'))
+        new = self.tmp / 'new'
+        new.mkdir()
+        self.assertEqual(c.restore(new, ['a', 'b'], 'k', []), ('k', True))
+        self.assertEqual((new / 'b' / 'f').read_text(), 'shared')
+
+
+class CacheReadOnly(EasyCITest):
+    def test_restore_over_read_only_files(self):
+        # Review finding: restoring over a read-only file raised PermissionError.
+        import stat
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'deps').mkdir(parents=True)
+        f = ws / 'deps' / 'lock.txt'
+        f.write_text('cached')
+        os.chmod(f, stat.S_IREAD)
+        c = cache.NativeCache('ro')
+        self.assertTrue(c.save(ws, ['deps'], 'k'))
+        self.assertEqual(c.restore(ws, ['deps'], 'k', []), ('k', True))
+        self.assertEqual(f.read_text(), 'cached')
+        os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+
+
+class CacheStreaming(EasyCITest):
+    def test_restore_copies_in_chunks(self):
+        # Review finding: each cached file was read whole into memory on restore.
+        import tarfile
+        from unittest import mock
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'deps').mkdir(parents=True)
+        (ws / 'deps' / 'big.bin').write_bytes(b'x' * (3 << 20))
+        c = cache.NativeCache('stream')
+        self.assertTrue(c.save(ws, ['deps'], 'k'))
+        (ws / 'deps' / 'big.bin').unlink()
+        sizes = []
+        real = tarfile.ExFileObject.read
+
+        def spy(self, size=-1):
+            sizes.append(size)
+            return real(self, size)
+        with mock.patch.object(tarfile.ExFileObject, 'read', spy):
+            self.assertEqual(c.restore(ws, ['deps'], 'k', []), ('k', True))
+        self.assertEqual((ws / 'deps' / 'big.bin').stat().st_size, 3 << 20)
+        self.assertNotIn(-1, sizes)

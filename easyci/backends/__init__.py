@@ -162,6 +162,23 @@ def collect(root, patterns, dest, layout='artifact'):
     keeps workspace-relative paths (used for `evidence`). Symlinks and paths outside root are skipped.
     """
     root, dest, copied = pathlib.Path(root), pathlib.Path(dest), []
+    found, prefixes = match_files(root, patterns)
+    base = ''
+    if layout == 'artifact' and prefixes:
+        base = posixpath.commonpath([p or '.' for p in prefixes])
+        base = '' if base == '.' else base
+    for rel, path in sorted(found.items()):
+        out = posixpath.relpath(rel, base) if base else rel
+        target = dest / out
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        copied.append(out)
+    return copied
+
+
+def match_files(root, patterns):
+    """({workspace-relative path: Path}, [static prefixes]) for globs with `!` exclusions."""
+    root = pathlib.Path(root)
     resolved_root = root.resolve()
     includes, excludes = [], []
     for pattern in patterns:
@@ -190,17 +207,35 @@ def collect(root, patterns, dest, layout='artifact'):
                 rel = path.relative_to(root).as_posix()
                 if not any(rx.match(rel) for rx in excluded):
                     found.setdefault(rel, path)
-    base = ''
-    if layout == 'artifact' and prefixes:
-        base = posixpath.commonpath([p or '.' for p in prefixes])
-        base = '' if base == '.' else base
-    for rel, path in sorted(found.items()):
-        out = posixpath.relpath(rel, base) if base else rel
-        target = dest / out
+    return found, prefixes
+
+
+def hash_files(root, patterns):
+    """GitHub's hashFiles(): sha256 over the sha256 of every matching file, in path order; '' if none."""
+    import hashlib
+    found, _ = match_files(root, patterns)
+    if not found:
+        return ''
+    outer = hashlib.sha256()
+    for rel in sorted(found):
+        inner = hashlib.sha256()
+        with open(found[rel], 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b''):
+                inner.update(chunk)
+        outer.update(inner.digest())
+    return outer.hexdigest()
+
+
+def copy_in(src_dir, dest_dir):
+    """Copy an artifact folder into a workspace folder (download-artifact); return file count."""
+    src_dir, dest_dir = pathlib.Path(src_dir), pathlib.Path(dest_dir)
+    count = 0
+    for path in sorted(p for p in src_dir.rglob('*') if p.is_file()):
+        target = dest_dir / path.relative_to(src_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
-        copied.append(out)
-    return copied
+        count += 1
+    return count
 
 
 def find_metrics(root):

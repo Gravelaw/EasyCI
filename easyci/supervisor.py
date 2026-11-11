@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 
-from easyci import backends, expr, github, launch, snapshot, store
+from easyci import backends, expr, github, launch, snapshot, store, workflow
 
 RESULT = {'passed': 'success', 'skipped': 'skipped', 'cancelled': 'cancelled'}
 SECRET_NAME = re.compile(r'TOKEN|SECRET|PASSWORD|KEY', re.I)
@@ -312,6 +312,7 @@ class Supervisor:
                   else 'failure' if any(r == 'failure' for r in results) else 'skipped')
         if job['when'] != 'always':
             ctx = {'github': self.plan['github'], 'needs': needs, 'status': status, 'env': job['env'],
+                   'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
                    'runner': {'os': 'Windows' if job['backend'] == 'native' else 'Linux'}}
             if not expr.condition(job['if'], ctx):
                 return 'skipped', 'condition_false' if job['if'] else 'dependency_not_passed', None
@@ -333,8 +334,18 @@ class Supervisor:
 
     def run_job(self, job):
         jid, jr = job['id'], self.job_rec(job['id'])
-        needs = {n: {'result': RESULT.get(self.job_rec(n)['state'], 'failure'), 'outputs': self.outputs.get(n, {})}
-                 for n in job['needs']}
+        needs = {}
+        for n in job['needs']:  # a matrix job's dependents see all its combinations as one result
+            group = workflow.members(self.plan['jobs'], n)
+            outputs = {}
+            for member in group:
+                outputs.update(self.outputs.get(member['id'], {}))
+            needs[n] = {'result': workflow.group_result([RESULT.get(self.job_rec(m['id'])['state'], 'failure')
+                                                         for m in group]), 'outputs': outputs}
+        if job.get('strategy', {}).get('fail-fast') and any(
+                self.job_rec(m['id'])['state'] in ('failed', 'timed_out', 'interrupted')
+                for m in workflow.members(self.plan['jobs'], job.get('group', job['id'])) if m['id'] != job['id']):
+            return self.end_job(jr, 'cancelled', 'fail_fast')
         if self.cancelled():
             return self.end_job(jr, 'cancelled', 'cancelled')
         verdict = self.check_job(job, jr, needs)
@@ -350,11 +361,19 @@ class Supervisor:
         self.log_handle = open(job_dir / 'log.txt', 'ab')
         steps_record, outcome = [], None
         self.kill_reason = self.step_env = None
+        self.pending_caches = []
         self.last_output = time.time()
         deadline = time.time() + float(job['timeout_minutes']) * 60
         ws = backend.workspace(self.rd, self.run_id, jid)
         try:
             self.marker(f'job {jid} on {job["backend"]} ({self.run.get("platforms", {}).get(job["backend"], "")})')
+            self.service_env = {}
+            if job.get('services'):
+                self.service_env = backend.start_services(job['services'], self.run_id, jid)
+                # The generated password is masked everywhere, including inside DATABASE_URL.
+                self.secrets.append(self.service_env.get('PGPASSWORD', '').encode())
+                self.marker(f'services ready: {", ".join(job["services"])} '
+                            f'(DATABASE_URL on port {self.service_env.get("PGPORT")})')
             if job['command']:
                 self.marker('cloning the run commit into a clean workspace')
                 backend.checkout(ws, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
@@ -367,6 +386,19 @@ class Supervisor:
             outcome = outcome or ('failed', f'internal_error:{self.mask(error)[:120]}')
         finally:
             backend.end_job()
+            if job.get('services'):
+                try:
+                    backend.stop_services(self.run_id, jid)
+                    self.marker('services stopped')
+                except Exception as error:  # noqa: BLE001 - recorded; cleanup also runs at the end of the run
+                    self.marker(f'services stop error: {error}')
+        if outcome and outcome[0] == 'passed':
+            for store_, cache_ws, paths, key in self.pending_caches:  # actions/cache saves after a passing job
+                try:
+                    saved = store_.save(cache_ws, paths, key)
+                    self.marker(f'cache {"saved" if saved else "not saved (key exists or nothing to store)"}: {key}')
+                except Exception as error:  # noqa: BLE001 - a cache failure never fails the job
+                    self.marker(f'cache save failed: {error}')
         if self.kill_reason and job.get('on_kill') and self.step_env is not None:
             self.run_on_kill(job, jr, backend, ws, job_dir)
         try:
@@ -446,7 +478,11 @@ class Supervisor:
         # required_env values are the lowest layer of the `env` context, so `if:`, names and `with:`
         # see what run-script interpolation sees; workflow/job env and exported values win.
         passed = {name: base_env[name] for name in job['required_env']}
-        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os}, 'steps': {}, 'env': dict(passed)}
+        passed.update(getattr(self, 'service_env', {}) or {})  # DATABASE_URL, PG* from services
+        base_env.update(getattr(self, 'service_env', {}) or {})
+        ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os, 'arch': 'X64', 'temp': base_env['RUNNER_TEMP']},
+               'steps': {}, 'env': dict(passed), 'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
+               'job': {'status': 'success'}, '__hash_files__': lambda patterns: backend.hash_files(ws, patterns)}
         job_env = dict(passed)
         for layer in job.get('env_layers') or [job['env']]:  # workflow env first, then job env
             job_env.update(expr.interpolate(layer, {**ctx, 'env': dict(job_env)}))
@@ -458,7 +494,7 @@ class Supervisor:
             index = step['index']
             rec = {'index': index, 'name': step['name'], 'kind': step['kind'], 'started_at': store.iso()}
             record.append(rec)
-            ctx.update(status=status, env={**job_env, **extra_env})  # job_env already holds `passed`
+            ctx.update(status=status, env={**job_env, **extra_env}, job={'status': status})  # job_env holds `passed`
             if self.cancelled():
                 rec['outcome'] = 'cancelled'
                 return 'cancelled', 'cancelled'
@@ -466,7 +502,9 @@ class Supervisor:
             step_env = expr.interpolate(step.get('env') or {}, ctx)
             cond_ctx = {**ctx, 'env': {**ctx['env'], **step_env}} if step_env else ctx
             if step['kind'] == 'skipped' or not expr.condition(step.get('if'), cond_ctx):
-                rec['outcome'] = 'skipped'
+                rec['outcome'] = rec['conclusion'] = 'skipped'
+                if step.get('id'):
+                    ctx['steps'][step['id']] = {'outputs': {}, 'outcome': 'skipped', 'conclusion': 'skipped'}
                 jr['steps_done'] = index
                 continue
             name = self.redact(expr.to_str(expr.interpolate(step['name'], ctx)).encode('utf-8')).decode(
@@ -483,8 +521,11 @@ class Supervisor:
                        finished_at=store.iso(), elapsed_s=round(time.time() - started, 1))
             code = '' if rec['exit_code'] is None else f' (exit {rec["exit_code"]})'
             self.marker(f'step {index} {rec["outcome"]}{code} after {rec["elapsed_s"]}s')
+            # conclusion is the outcome after continue-on-error: a failed step allowed to fail is a success.
+            rec['conclusion'] = 'success' if not ok and step.get('continue_on_error') and                 result.get('outcome') not in ('timed_out', 'cancelled', 'stalled') else rec['outcome']
             ctx['steps'][step.get('id') or f'__{index}'] = {'outputs': result.get('outputs', {}),
-                                                             'outcome': rec['outcome']}
+                                                             'outcome': rec['outcome'],
+                                                             'conclusion': rec['conclusion']}
             extra_env.update(result.get('env', {}))
             jr['steps_done'] = index
             if result.get('outcome') in ('timed_out', 'cancelled', 'stalled'):
@@ -493,12 +534,12 @@ class Supervisor:
                         'stalled': ('failed', 'stalled')}[result['outcome']]
             if not ok:
                 if step.get('continue_on_error'):
-                    rec['conclusion'] = 'success'
                     continue
                 status = 'failure'
                 failed = failed or {'index': index, 'name': name, 'exit_code': rec['exit_code']}
                 jr['failed_step'] = failed
-        ctx.update(status=status, env={**job_env, **extra_env})  # include the last step's exports
+        # Include the last step's exports and its result: a failing final step makes job.status failure.
+        ctx.update(status=status, env={**job_env, **extra_env}, job={**ctx.get('job', {}), 'status': status})
         self.outputs[job['id']] = {k: expr.to_str(expr.interpolate(v, ctx)) for k, v in job['outputs'].items()}
         jr['outputs'] = {k: self.redact(v.encode('utf-8')).decode('utf-8', errors='replace')
                          for k, v in self.outputs[job['id']].items()}
@@ -530,13 +571,14 @@ class Supervisor:
             self.marker(f'{step["tool"]} {actual} verified (requested {step["requested"] or "any"})')
             return True, {}
         if kind == 'cache':
-            self.marker('cache step skipped (local)')
-            return True, {}
+            return self.cache_step(step, ctx, backend, ws, env)
+        if kind == 'download-artifact':
+            return self.download_step(step, ctx, backend, ws, env)
         if kind == 'upload-artifact':
             # Inputs see the job env plus this step's own `env:`, as run scripts do.
             step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
             with_ = expr.interpolate(step['with'], {**ctx, 'env': {**ctx['env'], **step_env}})
-            name = re.sub(r'[^A-Za-z0-9._-]', '_', with_.get('name') or 'artifact')
+            name = store.artifact_dir_name(with_.get('name') or 'artifact')
             paths = [p for p in str(with_.get('path', '')).splitlines() if p.strip()]
             copied = backend.collect(ws, paths, job_dir / 'artifacts' / name)
             self.marker(f'artifact {name}: {len(copied)} file(s)')
@@ -573,6 +615,49 @@ class Supervisor:
             result['outcome'] = outcome
             return False, result
         return proc.popen.returncode == 0, result
+
+    def step_inputs(self, step, ctx, env):
+        step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
+        return expr.interpolate(step.get('with') or {}, {**ctx, 'env': {**ctx['env'], **step_env}})
+
+    def cache_step(self, step, ctx, backend, ws, env):
+        from easyci import cache as cache_mod
+        with_ = self.step_inputs(step, ctx, env)
+        key, paths = with_.get('key', '').strip(), cache_mod.split_lines(with_.get('path'))
+        if not key:
+            self.marker('cache key is empty after evaluation; skipping the cache')
+            return True, {'outputs': {'cache-hit': 'false'}}
+        store_ = backend.cache(self.run['project'])
+        if step['variant'] == 'save':
+            saved = store_.save(ws, paths, key)
+            self.marker(f'cache {"saved" if saved else "not saved (key exists or nothing to store)"}: {key}')
+            return True, {}
+        matched, exact = store_.restore(ws, paths, key, cache_mod.split_lines(with_.get('restore-keys')))
+        self.marker(f'cache {"hit" if exact else "restored from " + matched if matched else "miss"}: {key}')
+        if step['variant'] == 'cache' and not exact:
+            self.pending_caches.append((store_, ws, paths, key))
+        if not matched and str(with_.get('fail-on-cache-miss', 'false')).lower() == 'true':
+            return False, {'exit_code': 1, 'outputs': {'cache-hit': 'false'}}
+        return True, {'outputs': {'cache-hit': 'true' if exact else 'false', 'cache-primary-key': key,
+                                  'cache-matched-key': matched or ''}}
+
+    def download_step(self, step, ctx, backend, ws, env):
+        with_ = self.step_inputs(step, ctx, env)
+        name, path = with_.get('name', '').strip(), with_.get('path', '').strip()
+        if path and not inside_workspace(path):
+            self.marker(f'download path {path!r} must be a relative path inside the workspace; refusing it')
+            return False, {'exit_code': 1}
+        roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
+        chosen = [p for p in roots if p.name == store.artifact_dir_name(name)] if name else roots
+        if name and not chosen:
+            self.marker(f'artifact {name} was not uploaded earlier in this run')
+            return False, {'exit_code': 1}
+        total = 0
+        for artifact in chosen:  # without a name every artifact lands in its own folder, as on GitHub
+            folder = store.artifact_name(artifact.name)
+            total += backend.copy_in(artifact, ws, path if name else posixpath.join(path, folder) if path else folder)
+        self.marker(f'downloaded {len(chosen)} artifact(s), {total} file(s)')
+        return True, {'outputs': {'download-path': path or '.'}}
 
     def read(self, path, raw=False):
         try:

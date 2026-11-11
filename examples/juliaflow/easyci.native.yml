@@ -1,0 +1,39 @@
+# EasyCI Phase 1: run JuliaFlow's `web` and `julia` jobs natively. EasyCI reads their steps from
+# .github/workflows/ci.yml and runs them itself in the WSL distro, without delegating to
+# scripts/ci/wsl.mjs. The release gate stays delegated (see easyci.yml next to this file) until
+# the Phase 3 container backend can provide what it needs.
+#
+# Use it with:
+#   easyci run --repo "D:\Julia Project" --profile pr-native --config examples\juliaflow\easyci.native.yml
+#
+# The variables below reproduce what JuliaFlow's own runner (scripts/ci/wsl-job.sh) gives each job:
+# a private PostgreSQL and the JULIAFLOW_* settings its tests read.
+version: 1
+backend: wsl:juliaflow-ci-ubuntu24
+report: true
+busy_paths: [artifacts/local-ci/*/summary.json]
+profiles:
+  pr-native: {event: pull_request, jobs: [web, julia]}
+jobs:
+  execution-policy:
+    skip: true                          # hosted-only gate; EasyCI decides locally
+  web:
+    when: always                        # ignore the workflow `if:` (it waits for execution-policy)
+    timeout_minutes: 120
+    stall_minutes: 30
+    services: {postgres: {version: 16}}
+    env: &juliaflow-env
+      JULIAFLOW_CI_EXTERNAL_POSTGRES: "1"
+      JULIAFLOW_DATABASE_URL: ${{ env.DATABASE_URL }}
+      JULIAFLOW_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+      JULIAFLOW_TEST_POSTGRES_SCHEMA: juliaflow_ci_easyci
+      JULIAFLOW_CONTROL_DOC_BASE: ${{ github.event.pull_request.base.sha }}
+      JULIAFLOW_JULIA_CMD: julia
+      JULIAFLOW_CI_HEAP_HINT: 1500M
+      JULIA_NUM_PRECOMPILE_TASKS: "1"
+  julia:
+    when: always
+    timeout_minutes: 240
+    stall_minutes: 45                   # Pkg.instantiate and precompile are quiet
+    services: {postgres: {version: 16}}
+    env: *juliaflow-env

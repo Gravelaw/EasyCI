@@ -16,7 +16,8 @@ class ConfigError(Exception):
 TOP_KEYS = {'version', 'backend', 'report', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths', 'busy_stale_minutes',
             'busy_wait_minutes'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
-            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes'}
+            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes', 'services', 'env'}
+SERVICES = {'postgres'}  # process-based services on the wsl backend (spec Phase 1; containers come in Phase 3)
 PROFILE_KEYS = {'event', 'jobs', 'workflow'}
 WORKFLOW_IGNORED = {'name', 'on', True, 'env', 'defaults', 'permissions', 'concurrency', 'jobs', 'run-name'}
 JOB_IGNORED = {'permissions', 'concurrency'}
@@ -26,7 +27,7 @@ STEP_KEYS = {'name', 'id', 'if', 'run', 'uses', 'with', 'env', 'shell', 'working
 SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python': ('python', 'python-version'),
          'julia-actions/setup-julia': ('julia', 'version'), 'actions/setup-java': ('java', 'java-version'),
          'actions/setup-go': ('go', 'go-version')}
-CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')
+CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')  # local caches since Phase 1
 SHELLS = {'bash', 'sh', 'pwsh', 'powershell', 'cmd'}
 BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?)\Z')
 LOCKFILES = ('package-lock.json', 'Project.toml', 'Manifest.toml', 'uv.lock', 'poetry.lock')
@@ -103,6 +104,16 @@ def load_config(text, source='easyci.yml'):
         tools = job.get('toolchains', {})
         if not isinstance(tools, dict) or any(v not in ('ignore', 'verify') for v in tools.values()):
             raise ConfigError(f'{where}.toolchains values must be ignore or verify')
+        services = job.get('services', {})
+        if not isinstance(services, dict) or set(services) - SERVICES or \
+                any(not isinstance(v, (dict, type(None))) for v in services.values()):
+            raise ConfigError(f'{where}.services must map {sorted(SERVICES)} to settings (or {{}})')
+        for name_, settings in services.items():
+            if set(settings or {}) - {'version'}:
+                raise ConfigError(f'{where}.services.{name_} may only set version')
+        env = job.get('env', {})
+        if not isinstance(env, dict) or any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(k)) for k in env):
+            raise ConfigError(f'{where}.env must map variable names to values')
     return cfg
 
 
@@ -199,10 +210,20 @@ def applies(doc, path, inp):
 
 def github_context(inp):
     ref_name = inp['ref_name']
-    gh = {'sha': inp['commit'], 'ref': ref_name if ref_name.startswith('refs/') else f'refs/heads/{ref_name}',
-          'ref_name': ref_name, 'repository': inp.get('repository') or '', 'event_name': inp['event'], 'event': {}}
+    repository, default = inp.get('repository') or '', inp.get('default_branch') or ''
+    ref = ref_name if ref_name.startswith('refs/') else f'refs/heads/{ref_name}'
+    # As on GitHub: refs/tags/v1 is ref_type tag with ref_name v1; refs/heads/x is branch x.
+    ref_type = 'tag' if ref.startswith('refs/tags/') else 'branch'
+    short = ref.split('/', 2)[2] if ref.startswith(('refs/tags/', 'refs/heads/')) else ref_name
+    gh = {'sha': inp['commit'], 'ref': ref,
+          'ref_name': short, 'ref_type': ref_type, 'repository': repository,
+          'repository_owner': repository.split('/')[0] if '/' in repository else '', 'event_name': inp['event'],
+          'server_url': 'https://github.com', 'head_ref': '', 'base_ref': '',
+          'event': {'repository': {'default_branch': default}}}
     if inp['event'] == 'pull_request':
-        gh['event'] = {'pull_request': {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base']}}}
+        gh['event']['pull_request'] = {'head': {'sha': inp['commit']}, 'base': {'sha': inp['base']}}
+        gh['head_ref'] = '' if re.fullmatch(r'[0-9a-f]{40}', ref_name) else ref_name
+        gh['base_ref'] = default
     return gh
 
 
@@ -295,6 +316,9 @@ def plan_step(index, step, ctx):
         if any(k.endswith('-file') for k in with_):
             raise Unsupported(f'toolchain_spec_unsupported:{tool} version file')
         requested = with_.get(key)
+        if isinstance(requested, str) and '${{' in requested:  # e.g. node-version: ${{ matrix.node }}
+            requested = expr.to_str(expr.interpolate(requested, {'github': ctx['github'], 'matrix': ctx.get('matrix') or {},
+                                                                 'strategy': ctx.get('strategy') or {}}))
         if requested is not None:
             version_spec(requested, tool)
         out.update(kind='toolchain', tool=tool, requested=None if requested is None else str(requested),
@@ -303,14 +327,129 @@ def plan_step(index, step, ctx):
         if not with_.get('path'):
             raise Unsupported('unsupported_upload_artifact:path missing')
         out.update(kind='upload-artifact', decision='copy files into the run evidence')
-    elif name in CACHE:
-        out.update(kind='cache', decision='cache step skipped (local)')
+    elif name in CACHE and ver[:2] in ('v3', 'v4'):
+        variant = {'actions/cache': 'cache', 'actions/cache/restore': 'restore', 'actions/cache/save': 'save'}[name]
+        paths = [p.strip() for p in str(with_.get('path', '')).splitlines() if p.strip()]
+        if not paths or not with_.get('key'):
+            raise Unsupported(f'unsupported_cache:{name} needs path and key')
+        if any(p.startswith('!') or any(c in p for c in '*?[') for p in paths):
+            raise Unsupported('unsupported_cache:glob or ! paths')
+        if any(k in with_ for k in ('enableCrossOsArchive', 'lookup-only', 'fail-on-cache-miss')) and \
+                str(with_.get('lookup-only', 'false')).lower() == 'true':
+            raise Unsupported('unsupported_cache:lookup-only')
+        out.update(kind='cache', variant=variant,
+                   decision={'cache': 'restore from the local cache; save after the job passes',
+                             'restore': 'restore from the local cache', 'save': 'save into the local cache'}[variant])
+    elif name == 'actions/download-artifact' and ver[:2] in ('v3', 'v4'):
+        if with_.get('pattern') or with_.get('artifact-ids') or with_.get('run-id') or with_.get('github-token'):
+            raise Unsupported('unsupported_download_artifact:only name and path are supported')
+        out.update(kind='download-artifact', decision='copy an artifact uploaded earlier in this run')
     else:
         raise Unsupported(f'unsupported_uses:{uses or "?"}')
     return out
 
 
-def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
+MAX_MATRIX = 256
+
+
+def slug(value):
+    return re.sub(r'[^A-Za-z0-9._-]+', '-', expr.to_str(value)).strip('-')[:40] or 'x'
+
+
+def expand_matrix(job, gh):
+    """[(combo, strategy)] for a job's strategy.matrix, [] without one. Raises Unsupported.
+
+    Follows GitHub: the cartesian product of the keys, minus `exclude` entries (all their keys
+    match), then `include` entries extend the combinations whose original keys they match, or are
+    added as new combinations when they match none.
+    """
+    strategy = job.get('strategy') or {}
+    raw = strategy.get('matrix')
+    if raw is None:
+        return []
+    try:
+        matrix = expr.evaluate_value(raw, {'github': gh})
+    except Unsupported:
+        raise Unsupported('unsupported_matrix:only literal matrices or fromJSON of literals/github values') from None
+    if not isinstance(matrix, dict):
+        raise Unsupported('unsupported_matrix:matrix must be a mapping')
+    include, exclude = matrix.get('include') or [], matrix.get('exclude') or []
+    keys = [k for k in matrix if k not in ('include', 'exclude')]
+    if any(not isinstance(matrix[k], list) for k in keys) or not isinstance(include, list) or not isinstance(exclude, list):
+        raise Unsupported('unsupported_matrix:values must be lists')
+    combos = [{}]
+    for key in keys:
+        combos = [{**c, key: v} for c in combos for v in matrix[key]]
+    if not keys:
+        combos = []
+    combos = [c for c in combos if not any(isinstance(e, dict) and all(matrix_equal(c.get(k), v) for k, v in e.items())
+                                           for e in exclude)]
+    # GitHub's rule: an include entry is added to every original combination whose matrix values it
+    # does not contradict (an entry with no matrix keys fits them all); it never overwrites an
+    # original value but may overwrite one an earlier entry added. An entry that fits none becomes a
+    # combination of its own; such added combinations are not matched by later entries.
+    added = []
+    for entry in include:
+        if not isinstance(entry, dict):
+            raise Unsupported('unsupported_matrix:include entries must be mappings')
+        original = {k: v for k, v in entry.items() if k in keys}
+        matched = False
+        for combo in combos:
+            if all(matrix_equal(combo.get(k), v) for k, v in original.items()):
+                combo.update({k: v for k, v in entry.items() if k not in keys})
+                matched = True
+        if not matched:
+            added.append(dict(entry))
+    combos += added
+    if not combos:
+        raise Unsupported('unsupported_matrix:the matrix expands to no jobs')
+    if len(combos) > MAX_MATRIX:
+        raise Unsupported(f'unsupported_matrix:{len(combos)} combinations (limit {MAX_MATRIX})')
+    fail_fast = strategy.get('fail-fast', True)
+    if not isinstance(fail_fast, bool):
+        raise Unsupported('unsupported_matrix:fail-fast must be true or false')
+    return [(combo, {'job-index': i, 'job-total': len(combos), 'fail-fast': fail_fast,
+                     'max-parallel': strategy.get('max-parallel', len(combos))}) for i, combo in enumerate(combos)]
+
+
+def matrix_equal(a, b):
+    """Matrix values compare by content: objects and lists structurally (two `{version: 20}` from
+    different places are the same entry), scalars with the expression language's loose equality."""
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return a == b
+    return expr.equal(a, b)
+
+
+def plan_matrix_jobs(wf_path, wf, jid, job, jcfg, cfg, inp, gh, reserved=None):
+    """Plan a job, expanding strategy.matrix into one job per combination (id `build-ubuntu-20`,
+    name `build (ubuntu, 20)`, `group` = the workflow's job id). `reserved` holds every job id in
+    the workflows and every id generated so far; a combination never takes one of them."""
+    reserved = set() if reserved is None else reserved
+    try:
+        expanded = expand_matrix(job, gh) if isinstance(job, dict) else []
+    except Unsupported as error:
+        out = plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh)
+        out['unsupported'].append(str(error))
+        return [out]
+    if not expanded:
+        return [plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh)]
+    out = []
+    for combo, strategy in expanded:
+        values = [expr.to_str(v) for v in combo.values() if not isinstance(v, (dict, list))]
+        sub = f'{jid}-' + '-'.join(slug(v) for v in values) if values else f'{jid}-{strategy["job-index"]}'
+        while sub in reserved:
+            sub += f'-{strategy["job-index"]}'
+        reserved.add(sub)
+        planned = plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=combo, strategy=strategy)
+        planned['id'] = sub
+        planned['group'] = jid
+        if not job.get('name'):
+            planned['name'] = f'{jid} ({", ".join(values)})'
+        out.append(planned)
+    return out
+
+
+def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=None):
     reasons, notes = [], []
     if not isinstance(job, dict):
         raise ConfigError(f'{wf_path}: job {jid} must be a mapping')
@@ -324,22 +463,34 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
            'env': {**{k: expr.to_str(v) for k, v in (wf.get('env') or {}).items()},
                    **{k: expr.to_str(v) for k, v in (job.get('env') or {}).items()}},
            # Kept apart so the workflow layer is resolved before job values that reference it.
-           'env_layers': [{k: expr.to_str(v) for k, v in (layer or {}).items()} for layer in (wf.get('env'), job.get('env'))],
+           'env_layers': [{k: expr.to_str(v) for k, v in (layer or {}).items()}
+                          for layer in (wf.get('env'), job.get('env'), jcfg.get('env'))],
+           'services': {k: dict(v or {}) for k, v in (jcfg.get('services') or {}).items()},
            'command': jcfg.get('command'), 'on_kill': jcfg.get('on_kill'),
            'on_kill_minutes': jcfg.get('on_kill_minutes', 10), 'evidence': list(jcfg.get('evidence', [])),
            'required_env': list(jcfg.get('required_env', [])), 'toolchain_policy': dict(jcfg.get('toolchains', {})),
-           'unsupported': reasons, 'notes': notes}
+           'unsupported': reasons, 'notes': notes, 'group': jid, 'matrix': matrix or {}, 'strategy': strategy or {}}
+    if matrix is not None:
+        mctx = {'github': gh, 'matrix': matrix, 'strategy': strategy}
+        try:
+            out['name'] = expr.interpolate(out['name'], mctx)
+            if isinstance(out['runs_on'], (str, list)):
+                out['runs_on'] = expr.interpolate(out['runs_on'], mctx)
+        except Unsupported as error:
+            reasons.append(str(error))
     if isinstance(out['timeout_minutes'], str):
         reasons.append('unsupported_expression:timeout-minutes')
         out['timeout_minutes'] = 360
     backend, why = map_backend(jid, jcfg, cfg, inp)
     try:
         if backend is None:
-            backend, why = runs_on_backend(job.get('runs-on'), cfg, inp)
+            backend, why = runs_on_backend(out['runs_on'], cfg, inp)
     except Unsupported as error:
         reasons.append(str(error))
         backend = backend or 'native'
     out['backend'], out['backend_reason'] = backend, why
+    if out['services'] and not str(backend).startswith('wsl'):
+        reasons.append(f'unsupported_services:{",".join(out["services"])} needs a wsl backend')
     if out['skip']:
         notes.append('skipped by easyci.yml')
         return out
@@ -363,12 +514,14 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
         notes.append('steps replaced by easyci.yml command; uses: not evaluated')
         return out
     for key in sorted(set(job) - JOB_SUPPORTED):
-        if key == 'strategy' and not (job[key] or {}).get('matrix'):
-            continue
-        reasons.append(f'unsupported_job_key:{key}' + (' (matrix is Phase 1)' if key == 'strategy' else ''))
+        if key == 'strategy':
+            continue  # strategy.matrix is expanded by plan_matrix_jobs
+        reasons.append(f'unsupported_job_key:{key}')
     defaults = {**((wf.get('defaults') or {}).get('run') or {}), **((job.get('defaults') or {}).get('run') or {})}
     skip_steps = jcfg.get('skip_steps', [])
-    ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(job.get('runs-on')), 'github': gh}
+    # The resolved runner (a matrix `runs-on: ${{ matrix.os }}` is already filled in) picks the default shell.
+    ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(out['runs_on']), 'github': gh,
+           'matrix': matrix or {}, 'strategy': strategy or {}}
     for index, step in enumerate(job.get('steps') or [], 1):
         if not isinstance(step, dict):
             raise ConfigError(f'{wf_path}: job {jid} step {index} must be a mapping')
@@ -391,8 +544,15 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh):
     return out
 
 
+def members(jobs, group):
+    return [j for j in jobs if j.get('group', j['id']) == group]
+
+
 def order_jobs(jobs):
     by_id, ordered, state = {j['id']: j for j in jobs}, [], {}
+    groups = {}
+    for job in jobs:
+        groups.setdefault(job.get('group', job['id']), []).append(job['id'])
 
     def visit(jid, chain):
         if state.get(jid) == 'done':
@@ -401,9 +561,10 @@ def order_jobs(jobs):
             raise ConfigError(f'needs: cycle {" -> ".join(chain + [jid])}')
         state[jid] = 'active'
         for need in by_id[jid]['needs']:
-            if need not in by_id:
+            if need not in groups:
                 raise ConfigError(f'job {jid} needs unknown job {need}')
-            visit(need, chain + [jid])
+            for member in groups[need]:
+                visit(member, chain + [jid])
         state[jid] = 'done'
         ordered.append(by_id[jid])
     for job in jobs:
@@ -451,6 +612,7 @@ def build_plan(workflows, cfg, inp):
     for path, doc in docs:
         for jid in doc['jobs']:
             seen.setdefault(str(jid), []).append(path)
+    reserved = set(all_ids)  # matrix ids must not collide with any job id or with each other
     for path, doc in docs:
         for jid, job in doc['jobs'].items():
             jid = str(jid)
@@ -458,25 +620,27 @@ def build_plan(workflows, cfg, inp):
                 raise ConfigError(f'job {jid} exists in several workflows ({", ".join(seen[jid])}); '
                                   'pick one with --workflow or a profile workflow:')
             jcfg = (cfg.get('jobs') or {}).get(jid, {})
-            jobs.append(plan_job(path, doc, jid, job, jcfg, cfg, inp, gh))
+            jobs.extend(plan_matrix_jobs(path, doc, jid, job, jcfg, cfg, inp, gh, reserved))
     ordered = order_jobs(jobs)
     if selection:
-        by_id = {j['id']: j for j in ordered}
-        missing = [s for s in selection if s not in by_id]
+        groups = {}
+        for job in ordered:
+            groups.setdefault(job['group'], []).append(job)
+        missing = [s for s in selection if s not in groups]
         if missing:
             raise ConfigError(f'selected job(s) not found for event {inp["event"]}: {", ".join(missing)}')
         include = set()
 
-        def add(jid):
-            if jid not in include:
-                include.add(jid)
-                for need in by_id[jid]['needs']:
+        def add(group):
+            if group not in include:
+                include.add(group)
+                for need in groups[group][0]['needs']:
                     add(need)
-        for jid in selection:
-            add(jid)
-        ordered = [j for j in ordered if j['id'] in include]
+        for group in selection:
+            add(group)
+        ordered = [j for j in ordered if j['group'] in include]
     for job in ordered:
-        job['reported'] = (job['id'] in selection) if selection else not job['skip']
+        job['reported'] = (job['group'] in selection) if selection else not job['skip']
     plan = {'event': inp['event'], 'profile': profile, 'workflow': inp.get('workflow'), 'github': gh,
             'workflows': plan_wfs, 'jobs': ordered, 'gpu': cfg.get('gpu', 'optional'),
             'report': cfg.get('report', True)}
@@ -484,11 +648,22 @@ def build_plan(workflows, cfg, inp):
     return plan
 
 
+def group_result(results):
+    """needs.<job>.result for a job and all its matrix combinations, as on GitHub."""
+    if results and all(r == 'success' for r in results):
+        return 'success'
+    for state in ('failure', 'cancelled'):
+        if state in results:
+            return state
+    return 'skipped'
+
+
 def predict(plan):
     """Literal plan-time reading: outputs of earlier jobs are unknown (empty) until run time."""
     results = {}
     for job in plan['jobs']:
-        needs = {n: {'result': results.get(n, 'skipped'), 'outputs': {}} for n in job['needs']}
+        needs = {n: {'result': group_result([results.get(m['id'], 'skipped') for m in members(plan['jobs'], n)]),
+                     'outputs': {}} for n in job['needs']}
         results_ = [v['result'] for v in needs.values()]
         status = ('success' if all(r == 'success' for r in results_)
                   else 'failure' if any(r == 'failure' for r in results_) else 'skipped')  # same rule as the supervisor
@@ -503,6 +678,7 @@ def predict(plan):
                                             'runner': {'os': 'Linux'}, 'env': {}})
             state, reason = ('run', None) if ok else ('skipped', 'condition_false')
         job['predicted'], job['predicted_reason'] = state, reason
+        results[job['id']] = {'run': 'success', 'skipped': 'skipped', 'unsupported': 'failure'}.get(state, 'failure')
         if reason == 'condition_false' and 'needs.' in str(job['if']):
             job['predicted_note'] = 'outputs of earlier jobs are only known at run time and read as empty here'
         job['run_steps'] = sum(1 for s in job['steps'] if s['kind'] == 'run')

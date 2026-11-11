@@ -100,3 +100,12 @@ class Collector(EasyCITest):
     def test_unsafe_patterns_are_ignored(self):
         root = self.tree('ok.txt')
         self.assertEqual(self.collect(root, ['../x', '/etc/passwd', '', 'ok.txt'])[0], ['ok.txt'])
+
+
+class LaunchCommand(EasyCITest):
+    def test_supervisor_keeps_the_user_site(self):
+        # PyYAML is often a `pip install --user` package; -I would hide it from the supervisor.
+        from easyci import launch
+        cmd = launch.command(self.tmp / 'rd')
+        self.assertEqual(cmd[1:3], ['-E', '-P'])
+        self.assertNotIn('-I', cmd)

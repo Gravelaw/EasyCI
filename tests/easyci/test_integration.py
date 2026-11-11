@@ -78,6 +78,31 @@ class RealWsl(EasyCITest):
         os.environ.pop('EASYCI_WSL', None)
         self.backend = f'wsl:{DISTRO}'
 
+    def test_postgres_service_as_a_non_root_default_user(self):
+        # Review finding: runuser needs root. Run every service command as the distro's `nobody` user,
+        # the way a distro whose default user is not root would, and check start, use and stop.
+        from unittest import mock
+        from easyci.backends import wsl
+        real = wsl.wsl_run
+
+        def as_nobody(distro, script, timeout=120):
+            return wsl.run_quiet([wsl.wsl_exe(), '-d', distro, '-u', 'nobody', '--exec', 'bash', '-c', script],
+                                 timeout=timeout, env={**os.environ, 'WSL_UTF8': '1'})
+        backend, run_id = wsl.Wsl(DISTRO), f'nonroot-{os.getpid()}-{int(time.time())}'
+        with mock.patch.object(wsl, 'wsl_run', as_nobody):
+            env = backend.start_services({'postgres': {}}, run_id, 'j')
+            try:
+                d = backend.service_dir(run_id, 'j')
+                code, text = as_nobody(DISTRO, f'PGPASSWORD={env["PGPASSWORD"]} "$(cat {d}/bindir)/psql" -h 127.0.0.1 '
+                                               f'-p {env["PGPORT"]} -U easyci -d easyci -tAc "select 41 + 1"; '
+                                               f'ps -o user= -p "$(head -1 {d}/pg/postmaster.pid)"')
+                self.assertEqual((code, text.split()), (0, ['42', 'nobody']), text)
+            finally:
+                backend.stop_services(run_id, 'j')
+                backend.cleanup(None, run_id)
+        code, text = real(DISTRO, f'ls /var/tmp/easyci/{run_id} 2>/dev/null; pgrep -u nobody -f "[/]var/tmp/easyci/{run_id}"')
+        self.assertEqual(text.strip(), '', 'the service left files or processes behind')
+
     def group_alive(self, rd, index=1):
         from easyci.backends import wsl
         pgid = (rd / 'jobs/stub/steps' / f'{index}.pgid').read_text().strip()
@@ -118,6 +143,35 @@ class RealWsl(EasyCITest):
         self.assertEqual(doc['data']['state'], 'cancelled')
         self.assertFalse(self.group_alive(store.find_run(run_id)))
 
+    def test_postgres_service_cache_and_env_override(self):  # Phase 1
+        text = ('on: push\njobs:\n  stub:\n    runs-on: ubuntu-latest\n    steps:\n'
+                '      - uses: actions/checkout@v4\n'
+                '      - id: c\n        uses: actions/cache@v4\n        with: {path: .deps, key: "k-${{ hashFiles(\'lock.txt\') }}"}\n'
+                '      - run: |\n'
+                '          psql "$APP_DB" -tAc "select 40 + 2" | grep -x 42\n'
+                '          echo "hit=${{ steps.c.outputs.cache-hit }}"\n'
+                '          [ -f .deps/made ] && echo "cached $(cat .deps/made)" || { mkdir -p .deps; echo once > .deps/made; }\n')
+        cfg = 'jobs:\n  stub:\n    services: {postgres: {}}\n    env: {APP_DB: "${{ env.DATABASE_URL }}"}\n'
+        repo = self.make_repo(text, {'lock.txt': 'v1\n', 'easyci.yml': cfg})
+        logs = []
+        for _ in range(2):
+            run_id = self.start_wsl(repo)
+            code, data = self.wait(run_id, timeout=300)
+            self.assertEqual((code, data['state']), (0, 'passed'), json.dumps(data))
+            rd = store.find_run(run_id)
+            logs.append((rd / 'jobs/stub/log.txt').read_text(encoding='utf-8'))
+            import re
+            for path in rd.rglob('*'):  # the generated database password never reaches the evidence
+                if path.is_file():
+                    self.assertIsNone(re.search(rb'postgresql://easyci:[0-9a-f]{32}@', path.read_bytes()), path)
+        self.assertIn('services ready: postgres', logs[0])
+        self.assertIn('hit=false', logs[0])
+        self.assertIn('hit=true', logs[1])
+        self.assertIn('cached once', logs[1])
+        from easyci.backends import wsl
+        code, _ = wsl.wsl_run(DISTRO, f'ls /var/tmp/easyci/{run_id} 2>/dev/null; pgrep -u postgres -f /var/tmp/easyci/{run_id}/')
+        self.assertNotEqual(code, 0, 'service stopped and its folder removed')
+
     def test_toolchain_verified_in_distro(self):  # criterion 13, wsl half
         wanted = os.environ.get('EASYCI_TEST_NODE_MAJOR', '25')
         text = ('on: push\njobs:\n  stub:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@v4\n'
@@ -125,3 +179,27 @@ class RealWsl(EasyCITest):
         run_id = self.start_wsl(self.make_repo(text))
         code, data = self.wait(run_id, timeout=180)
         self.assertEqual(code, 0, json.dumps(data))
+
+
+@unittest.skipUnless(ENABLED and DISTRO, 'set EASYCI_INTEGRATION=1 and EASYCI_TEST_DISTRO=<a disposable distro>')
+class RealWslCache(EasyCITest):
+    def setUp(self):
+        super().setUp()
+        os.environ.pop('EASYCI_WSL', None)
+
+    def test_wsl_cache_entries(self):
+        from easyci import cache
+        from easyci.backends import wsl
+        from test_runs import exercise_cache
+        backend = wsl.Wsl(DISTRO)
+        ws = f'/tmp/easyci-cache-test-{os.getpid()}'
+        c = cache.WslCache(backend, f'cachetest-{os.getpid()}')
+        run = lambda script: wsl.wsl_run(DISTRO, script)  # noqa: E731
+        try:
+            run(f'rm -rf {ws} {ws}-new; mkdir -p {ws}')
+            write = lambda rel, text: run(f'mkdir -p "$(dirname {ws}/{rel})"; printf %s {text} > {ws}/{rel}')  # noqa: E731
+            read = lambda rel: run(f'cat {ws}/{rel}')[1]  # noqa: E731
+            exercise_cache(self, c, ws, write, read, link=lambda a, b: run(f'ln {ws}/{a} {ws}/{b}'))
+            self.assertEqual(run(f'cat {ws}-new/linked/b.txt')[1], 'shared')
+        finally:
+            run(f'rm -rf {ws} {ws}-new {c.dir}')

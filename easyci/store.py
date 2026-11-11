@@ -163,6 +163,18 @@ def project_slug(repo):
     return f'{name}-{hashlib.sha256(key.encode()).hexdigest()[:6]}'
 
 
+def artifact_dir_name(name):
+    """The folder an uploaded artifact is kept in under jobs/<job>/artifacts/. `evidence` there is
+    EasyCI's own folder, so an upload of that name gets a suffix normalisation can never produce."""
+    folder = re.sub(r'[^A-Za-z0-9._-]', '_', str(name or '') or 'artifact')
+    return folder + '@upload' if folder == 'evidence' else folder
+
+
+def artifact_name(folder):
+    """The artifact name a folder made by artifact_dir_name stands for."""
+    return folder[:-len('@upload')] if folder.endswith('@upload') else folder
+
+
 def project_dir(slug):
     return home() / 'projects' / slug
 

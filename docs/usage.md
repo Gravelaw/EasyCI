@@ -103,10 +103,26 @@ Branch on `data.state` (`queued`, `preparing`, `running`, `passed`, `failed`, `u
   `outputs`, `needs`.
 - `actions/checkout@v3..v5` (clean clone of the tested commit), `actions/setup-node`,
   `setup-python`, `setup-julia`, `setup-java`, `setup-go` (the installed version is **checked**, not
-  installed), `actions/upload-artifact@v3/v4`, `actions/cache` (skipped locally).
-- Expressions: `github.sha/ref/ref_name/repository/event_name`, the pull-request head and base
-  sha, `env.*`, `needs.*.outputs.*`, `needs.*.result`, `steps.*.outputs.*`, `runner.os`, literals,
-  `== != && || !`, parentheses, `always() success() failure()`.
+  installed; a setup step with an `if:` is checked only when it runs), `actions/upload-artifact` and
+  `actions/download-artifact` (v3/v4, between jobs of the same run).
+- `actions/cache`, `actions/cache/restore`, `actions/cache/save` (v3/v4) with a **local** cache:
+  the exact key first, then the newest entry for each `restore-keys` prefix; `actions/cache` saves
+  after the job passes. Outputs `cache-hit`, `cache-primary-key`, `cache-matched-key`. Native jobs
+  cache under `%EASYCI_HOME%\cache\<project>`, WSL jobs inside the distro under
+  `~/.easyci/cache/<project>`. Each project's cache is capped by `cache_limit_gb` in
+  `%EASYCI_HOME%\config.yml` (default 10), oldest entries first.
+- `strategy.matrix` with `include`/`exclude`, `fail-fast` (default true), `matrix: ${{ fromJSON(...) }}`
+  of literal values and `runs-on: ${{ matrix.os }}`. Each combination is its own job (id
+  `build-ubuntu-20`, name `build (ubuntu, 20)`, GitHub context `easyci/build-ubuntu-20`);
+  `needs: build` waits for all of them. Matrices built from `needs` outputs are unsupported.
+- Expressions: literals, `== != < <= > >= && || !`, parentheses, `a.b`, `a['b']`, `a[0]`;
+  `always() success() failure() cancelled()`, `contains startsWith endsWith format join toJSON
+  fromJSON hashFiles`; contexts `github` (`sha ref ref_name ref_type head_ref base_ref repository
+  repository_owner event_name server_url`, the pull-request head and base sha,
+  `event.repository.default_branch`), `env`, `needs`, `steps` (`outputs`, `outcome`, `conclusion`),
+  `matrix`, `strategy`, `job.status`, `runner` (`os arch temp`). Values EasyCI cannot know
+  (`github.actor`, a PR number, `secrets.*`, `vars.*`, `inputs.*`) make the job unsupported instead
+  of reading as empty.
 - `runs-on: ubuntu-*` runs on the default WSL backend, `windows-*` on `native`; `macos-*` is
   unsupported.
 
@@ -148,7 +164,15 @@ jobs:
     evidence: [reports/**]    # copied into the run's evidence after the job
     required_env: [MY_TOKEN]  # host variables passed through (and masked as *** in logs)
     toolchains: {node: ignore}           # do not check this setup-* version
+    services: {postgres: {version: 16}}  # a private PostgreSQL for this job (wsl backend)
+    env: {APP_DB: "${{ env.DATABASE_URL }}"}  # extra job variables, evaluated last
 ```
+
+`services: {postgres: {}}` starts a PostgreSQL server just for that job inside the WSL distro (it
+needs the distro's `postgresql` package), on a random port with a random password, and exports
+`DATABASE_URL`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE`. It is stopped and
+deleted when the job ends; the password is masked in logs. `env:` adds job variables on top of the
+workflow's own, so a project can rename those values for its tests.
 
 `on_kill` is for jobs that start things outside EasyCI's own process tree, such as a delegated
 runner that sets up a database or swap file inside WSL. When EasyCI stops a step because of a
@@ -167,7 +191,10 @@ Workflow `paths:` and `paths-ignore:` filters are evaluated against the files ch
 base and the tested commit (with ordered `!` patterns, as on GitHub). When there is nothing to
 compare with (base equals the commit), the workflow is included and the plan says so.
 
-A worked example for JuliaFlow is in [`examples/juliaflow/easyci.yml`](../examples/juliaflow/easyci.yml).
+Worked examples for JuliaFlow: [`examples/juliaflow/easyci.yml`](../examples/juliaflow/easyci.yml)
+delegates every PR job to JuliaFlow's own runner, and
+[`examples/juliaflow/easyci.native.yml`](../examples/juliaflow/easyci.native.yml) runs `web` and
+`julia` natively from the workflow's own steps.
 
 ## Where things are kept
 
