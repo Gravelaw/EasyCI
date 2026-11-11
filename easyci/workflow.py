@@ -19,7 +19,8 @@ TOP_KEYS = {'version', 'backend', 'container_backend', 'report', 'pr_comment', '
             'busy_stale_minutes',
             'busy_wait_minutes'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
-            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes', 'services', 'env'}
+            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes', 'services', 'env',
+            'setup', 'cleanup', 'cleanup_minutes'}
 SERVICES = {'postgres'}  # process-based services on the wsl backend (spec Phase 1; containers come in Phase 3)
 PROFILE_KEYS = {'event', 'jobs', 'workflow'}
 WORKFLOW_IGNORED = {'name', 'on', True, 'env', 'defaults', 'permissions', 'concurrency', 'jobs', 'run-name'}
@@ -100,10 +101,10 @@ def load_config(text, source='easyci.yml'):
             raise ConfigError(f'{where}.stall_action must be mark or kill')
         if 'backend' in job:
             backend_id(job['backend'], where)
-        for key in ('timeout_minutes', 'stall_minutes', 'on_kill_minutes'):
+        for key in ('timeout_minutes', 'stall_minutes', 'on_kill_minutes', 'cleanup_minutes'):
             if key in job:
                 number(job[key], f'{where}.{key}')
-        for key in ('command', 'on_kill'):
+        for key in ('command', 'on_kill', 'setup', 'cleanup'):
             if key in job and (not isinstance(job[key], str) or not job[key].strip()):
                 raise ConfigError(f'{where}.{key} must be a non-empty string')
         for key in ('evidence', 'required_env', 'skip_steps'):
@@ -455,6 +456,7 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
                           for layer in (wf.get('env'), job.get('env'), jcfg.get('env'))],
            'services': {k: dict(v or {}) for k, v in (jcfg.get('services') or {}).items()},
            'command': jcfg.get('command'), 'on_kill': jcfg.get('on_kill'),
+           'cleanup': jcfg.get('cleanup'), 'cleanup_minutes': jcfg.get('cleanup_minutes', 10),
            'on_kill_minutes': jcfg.get('on_kill_minutes', 10), 'evidence': list(jcfg.get('evidence', [])),
            'required_env': list(jcfg.get('required_env', [])), 'toolchain_policy': dict(jcfg.get('toolchains', {})),
            'unsupported': reasons, 'notes': notes, 'group': jid, 'matrix': matrix or {}, 'strategy': strategy or {}}
@@ -511,6 +513,7 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
                          'kind': 'run', 'run': out['command'], 'shell': 'bash',
                          'decision': 'easyci.yml command replaces every workflow step'}]
         notes.append('steps replaced by easyci.yml command; uses: not evaluated')
+        add_setup_step(out, jcfg)
         return out
     for key in sorted(set(job) - JOB_SUPPORTED):
         if key == 'strategy':
@@ -538,7 +541,19 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
                                       'if': mapped.get('if')})
     if not out['steps']:
         reasons.append('unsupported_job:no steps')
+    add_setup_step(out, jcfg)
     return out
+
+
+def add_setup_step(out, jcfg):
+    """easyci.yml `setup:` runs first, as step 0, with the job's environment. It can prepare the
+    machine the way a project's own runner does (a swap file, a wrapper on $GITHUB_PATH) without
+    changing the workflow. If it fails, the job fails there."""
+    if jcfg.get('setup'):
+        out['steps'].insert(0, {'index': 0, 'name': 'easyci.yml setup', 'id': None, 'if': None, 'env': {},
+                                'continue_on_error': False, 'timeout_minutes': None, 'working_directory': None,
+                                'kind': 'run', 'run': jcfg['setup'], 'shell': 'bash',
+                                'decision': 'added by easyci.yml setup'})
 
 
 def members(jobs, group):
