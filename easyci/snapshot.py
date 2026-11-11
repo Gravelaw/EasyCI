@@ -91,9 +91,10 @@ def show(repo, commit, path):
 
 
 def list_tree(repo, commit, path=None):
-    args = ['ls-tree', '-r', '--name-only', commit] + ([path] if path else [])
-    out = git(args, repo, check=False)
-    return out.splitlines() if out else []
+    # -z: raw names; the default output quotes non-ASCII names ("donn\303\251es.csv").
+    args = ['ls-tree', '-r', '--name-only', '-z', commit] + ([path] if path else [])
+    out = git(args, repo, check=False, binary=True)
+    return [name for name in out.decode('utf-8', errors='replace').split('\0') if name] if out else []
 
 
 def make_bundle(repo, commit, base, dest):
