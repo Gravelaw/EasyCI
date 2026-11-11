@@ -91,9 +91,10 @@ def show(repo, commit, path):
 
 
 def list_tree(repo, commit, path=None):
-    args = ['ls-tree', '-r', '--name-only', commit] + ([path] if path else [])
-    out = git(args, repo, check=False)
-    return out.splitlines() if out else []
+    # -z: raw names; the default output quotes non-ASCII names ("donn\303\251es.csv").
+    args = ['ls-tree', '-r', '--name-only', '-z', commit] + ([path] if path else [])
+    out = git(args, repo, check=False, binary=True)
+    return [name for name in out.decode('utf-8', errors='replace').split('\0') if name] if out else []
 
 
 def make_bundle(repo, commit, base, dest):
@@ -108,14 +109,19 @@ def make_bundle(repo, commit, base, dest):
         return git(['rev-parse', f'{commit}^{{tree}}'], bare)
 
 
-def clone_bundle(bundle, dest, commit, tree):
-    """Clean clone of the bundle at commit; verifies identity and rejects symlinks and submodules."""
+def clone_bundle(bundle, dest, commit, tree, refs=None):
+    """Clean clone of the bundle at commit; verifies identity and rejects symlinks and submodules.
+
+    `refs` ({ref: sha}) are created after the clone, e.g. refs/remotes/origin/main at the base, so
+    scripts that compare with `origin/<default branch>` work as after a full checkout on GitHub."""
     dest = pathlib.Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     git(['clone', '--quiet', '--no-hardlinks', '--no-checkout', str(bundle), str(dest)], dest.parent)
     git(['checkout', '--quiet', '--detach', commit], dest)
     if git(['rev-parse', 'HEAD'], dest) != commit or git(['rev-parse', 'HEAD^{tree}'], dest) != tree:
         raise GitError('checkout identity mismatch')
+    for ref, sha in (refs or {}).items():
+        git(['update-ref', ref, sha], dest)
     return dest
 
 

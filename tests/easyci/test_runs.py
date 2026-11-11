@@ -296,6 +296,55 @@ class NativeRuns(EasyCITest):
         self.assertNotIn('on_kill', data['jobs'][0])
         self.assertNotIn('on_kill', (self.run_dir(data['run_id']) / 'jobs/slow/log.txt').read_text())
 
+    def test_setup_and_cleanup_hooks(self):
+        # A project's own runner may prepare the machine (JuliaFlow: a swap file and a julia wrapper)
+        # and release it afterwards. setup runs first with $GITHUB_PATH; cleanup always runs.
+        wf = ('on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env: {WHO: workflow}\n    steps:\n'
+              '      - run: tool-from-setup\n      - run: exit "$RESULT"\n')
+        cfg = ('jobs:\n  j:\n    env: {RESULT: "%s"}\n    setup: |\n'
+               '      mkdir -p "$RUNNER_TEMP/bin"\n'
+               '      printf \'#!/bin/sh\\necho "wrapped for $WHO"\\n\' > "$RUNNER_TEMP/bin/tool-from-setup"\n'
+               '      chmod +x "$RUNNER_TEMP/bin/tool-from-setup"\n'
+               '      echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n'
+               '    cleanup: echo "cleanup saw $EASYCI_JOB_STATE"; exit 4\n')
+        for result, state in (('0', 'passed'), ('1', 'failed')):
+            repo = self.make_repo(wf, {'easyci.yml': cfg % result}, name=f'hooks-{result}')
+            code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+            job = data['jobs'][0]
+            self.assertEqual(data['state'], state, data)
+            self.assertEqual(job['cleanup']['exit_code'], 4)  # a failing cleanup never changes the result
+            log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
+            self.assertIn('wrapped for workflow', log)
+            self.assertIn(f'cleanup saw {state}', log)
+            self.assertLess(log.index('wrapped for workflow'), log.index('running cleanup'))
+        # Review finding: cleanup sees what the last step exported.
+        last = ('on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
+                '      - run: echo "RESOURCE_ID=resource-123" >> "$GITHUB_ENV"\n')
+        repo = self.make_repo(last, {'easyci.yml': 'jobs:\n  j:\n    cleanup: echo "releasing $RESOURCE_ID"\n'},
+                              name='hooks-last-export')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        self.assertIn('releasing resource-123', (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text())
+        # A failing setup fails the job before the workflow's steps; cleanup still runs.
+        repo = self.make_repo(wf, {'easyci.yml': 'jobs:\n  j:\n    setup: exit 9\n    cleanup: echo released\n'},
+                              name='hooks-setup-fails')
+        code, data = self.wait(self.start(repo, '--no-report')['run_id'])
+        job = data['jobs'][0]
+        self.assertEqual((data['state'], job['failed_step']['name'], job['failed_step']['exit_code']),
+                         ('failed', 'easyci.yml setup', 9))
+        log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
+        self.assertNotIn('tool-from-setup', log.split('running cleanup')[0].split('easyci.yml setup')[-1])
+        self.assertIn('released', log)
+        # Cancel: cleanup runs after the step is stopped.
+        repo = self.make_repo(sleeper(60), {'easyci.yml': 'jobs:\n  slow:\n    cleanup: echo "after $EASYCI_JOB_STATE"\n'},
+                              name='hooks-cancel')
+        run = self.start(repo, '--no-report')
+        log_path = self.run_dir(run['run_id']) / 'jobs/slow/log.txt'
+        self.until(lambda: log_path.exists() and b'started' in log_path.read_bytes())
+        self.call('cancel', run['run_id'])
+        code, data = self.wait(run['run_id'])
+        self.assertEqual(data['state'], 'cancelled')
+        self.assertIn('after cancelled', log_path.read_text())
+
     def test_secrets_reach_later_steps_unmasked_but_never_persist(self):
         # Review findings: a secret forwarded through $GITHUB_ENV / $GITHUB_OUTPUT must arrive intact
         # (masking is for evidence, not execution), and a secret interpolated into a step script by
@@ -559,6 +608,22 @@ jobs:
         from easyci.backends.native import windows_path
         self.assertEqual((windows_path('/c/tools/bin'), windows_path('/d'), windows_path('rel')),
                          ('C:\\tools\\bin', 'D:\\', 'rel'))
+
+    def test_checkout_has_origin_default_branch_at_the_base(self):
+        workflow = ('on: pull_request\njobs:\n  r:\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - uses: actions/checkout@v4\n        with: {fetch-depth: 0}\n'
+                    '      - run: echo "origin-main=$(git rev-parse origin/main)"; git diff --stat origin/main...HEAD\n')
+        repo = self.make_repo(workflow)
+        base = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'checkout', '-q', '-b', 'feature')
+        (pathlib.Path(repo) / 'change.txt').write_text('x\n')
+        self.git(repo, 'add', '-A')
+        self.git(repo, 'commit', '-qm', 'change')
+        code, data = self.wait(self.start(repo, '--no-report', '--base', base, '--event', 'pull_request')['run_id'])
+        self.assertEqual((code, data['state']), (0, 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/r/log.txt').read_text()
+        self.assertIn(f'origin-main={base}', log)
+        self.assertIn('change.txt', log)
 
     def test_checkout_path_expression_is_resolved(self):
         workflow = ('on: push\njobs:\n  co:\n    runs-on: ubuntu-latest\n    env: {SOURCE_DIR: source}\n    steps:\n'

@@ -143,7 +143,9 @@ class Mapping(unittest.TestCase):
 
     def test_runner_shell_and_keys(self):
         cases = {'runs-on: macos-latest\n    steps: [{run: x}]': 'unsupported_runs_on:macos-latest',
-                 'runs-on: ubuntu-latest\n    services: {pg: {image: postgres}}\n    steps: [{run: x}]': 'unsupported_job_key:services',
+                 'runs-on: ubuntu-latest\n    services: {pg: {image: postgres}}\n    steps: [{run: x}]':
+                     'unsupported_container:container/services need a podman backend '
+                     '(set container_backend: podman:<distro> in easyci.yml)',
                  'runs-on: ubuntu-latest\n    steps: [{run: x, shell: fish}]': 'unsupported_shell:fish',
                  'runs-on: ubuntu-latest\n    steps: [{uses: actions/setup-node@v4, with: {node-version: lts/*}}]':
                      'toolchain_spec_unsupported:node lts/*',

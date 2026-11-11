@@ -167,7 +167,8 @@ def artifact_dir_name(name):
     """The folder an uploaded artifact is kept in under jobs/<job>/artifacts/. `evidence` there is
     EasyCI's own folder, so an upload of that name gets a suffix normalisation can never produce."""
     folder = re.sub(r'[^A-Za-z0-9._-]', '_', str(name or '') or 'artifact')
-    return folder + '@upload' if folder == 'evidence' else folder
+    # `evidence` and `<name>.pointer.json` are EasyCI's own names in that folder.
+    return folder + '@upload' if folder == 'evidence' or folder.endswith('.pointer.json') else folder
 
 
 def artifact_name(folder):
@@ -323,6 +324,10 @@ def mark_interrupted(rd):
                 backends.kill_leftover(beat['child'])
             except Exception as error:  # noqa: BLE001 - best effort, recorded
                 log(f'reaper could not kill leftover {beat["child"]}: {error}')
+        try:  # containers and services outlive the supervisor; stop them before the machine is reused
+            backends.remove_leftover_containers(run)
+        except Exception as error:  # noqa: BLE001
+            log(f'reaper could not remove containers of {rd.name}: {error}')
         if not finished:
             run['state'], run['finished_at'] = 'interrupted', iso()
             run['reason'] = 'supervisor_died'
@@ -363,7 +368,7 @@ def write_report(rd, run):
         'decisions': [{'job': j['id'], 'step': s['index'], 'kind': s['kind'], 'decision': s.get('decision')}
                       for j in plan.get('jobs', []) for s in j.get('steps', [])],
         'reproducibility': {**request.get('repro', {}), 'tree': run.get('tree'), 'easyci_version': VERSION,
-                            'host': socket.gethostname()},
+                            'host': socket.gethostname(), 'data': run.get('data', {})},
     }
     write_json(rd / 'report.json', report)
     return report
@@ -410,7 +415,85 @@ def verify(rd):
             mismatches.append({'path': rel, 'problem': 'changed'})
     for rel in sorted(set(actual) - set(expected)):
         mismatches.append({'path': rel, 'problem': 'extra'})
+    for rel in sorted(r for r in expected if is_pointer_path(r) and r in actual):  # offloaded artifacts
+        info = read_pointer(actual[rel])
+        if info is None:
+            continue  # not a pointer EasyCI wrote; it is checked above like any other sealed file
+        location = pathlib.Path(info['location'])
+        if location.is_dir():  # files added to the offloaded folder after sealing are reported too
+            for path in sorted(location.rglob('*')):
+                name = path.relative_to(location).as_posix()
+                if path.is_file() and name not in info['files']:
+                    mismatches.append({'path': f'{rel}:{name}', 'problem': 'extra'})
+        for name, value in sorted(info['files'].items()):
+            target = location / name
+            if not target.is_file():
+                mismatches.append({'path': f'{rel}:{name}', 'problem': 'missing'})
+            elif digest(target) != value:
+                mismatches.append({'path': f'{rel}:{name}', 'problem': 'changed'})
     return mismatches
+
+
+def is_pointer_path(rel):
+    """Only jobs/<job>/artifacts/<name>.pointer.json is EasyCI's; files inside artifacts are content."""
+    parts = str(rel).replace('\\', '/').split('/')
+    return len(parts) == 4 and parts[0] == 'jobs' and parts[2] == 'artifacts' and parts[3].endswith('.pointer.json')
+
+
+def read_pointer(path):
+    """An artifact pointer EasyCI wrote, or None for anything else (wrong kind or shape)."""
+    path = pathlib.Path(path)
+    info = read_json(path) if path.is_file() else None
+    if (isinstance(info, dict) and info.get('kind') == 'artifact-pointer' and isinstance(info.get('location'), str)
+            and isinstance(info.get('files'), dict)):
+        return info
+    return None
+
+
+def artifact_store(project):
+    return home() / 'artifacts' / project
+
+
+def data_hashes(repo, patterns, commit=None):
+    """{path: {sha256 | dvc_md5, size, source}} for the data a run used (spec section 13).
+
+    Paths are relative to the repository folder. A file tracked in git is hashed as it is at the
+    tested commit (what the job's checkout holds), not as it is in the working copy; untracked data
+    (the usual case, kept outside git) is hashed from the folder. A matched folder contributes every
+    file in it. A `.dvc` file contributes the md5 DVC recorded for its output."""
+    from easyci import snapshot
+    from easyci.backends import _glob_regex
+    root, out = pathlib.Path(repo), {}
+    tracked = set(snapshot.list_tree(repo, commit)) if commit else set()
+    for pattern in patterns:
+        pattern = str(pattern).replace('\\', '/')
+        matched = sorted(root.glob(pattern))
+        rels = {f.relative_to(root).as_posix() for m in matched
+                for f in ([m] if m.is_file() else m.rglob('*') if m.is_dir() else [])
+                if f.is_file() and not f.is_symlink()}
+        regex = _glob_regex(pattern)
+        rels |= {t for t in tracked if regex.match(t)}
+        for rel in sorted(rels):
+            if rel not in tracked and not rel.endswith('.dvc'):
+                # Untracked data can be large: hash it in chunks, never read it whole into memory.
+                path = root / rel
+                out[rel] = {'sha256': digest(path), 'size': path.stat().st_size, 'source': 'working tree'}
+                continue
+            if rel in tracked:
+                data, source = snapshot.show(repo, commit, rel) or b'', 'commit'
+            else:
+                data, source = (root / rel).read_bytes(), 'working tree'
+            if rel.endswith('.dvc'):
+                import yaml
+                try:
+                    outs = (yaml.safe_load(data.decode('utf-8')) or {}).get('outs') or []
+                except (UnicodeDecodeError, yaml.YAMLError, AttributeError):
+                    outs = []
+                out[rel] = {'dvc_md5': [o.get('md5') for o in outs if isinstance(o, dict)], 'size': len(data),
+                            'source': source}
+            else:
+                out[rel] = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data), 'source': source}
+    return out
 
 
 def busy_file(repo, patterns, stale_s):
@@ -433,7 +516,7 @@ def remove_backend_workspaces(rd, run):
     """Remove workspaces kept outside the run directory (WSL jobs work inside the distro, under
     ~/.easyci/work/<run-id>). Best effort: an unavailable distro is logged, never fatal."""
     from easyci import backends
-    for backend_id in sorted({j.get('backend') for j in run.get('jobs', []) if str(j.get('backend', '')).startswith('wsl')}):
+    for backend_id in sorted({j.get('backend') for j in run.get('jobs', []) if backends.is_linux(j.get('backend'))}):
         try:
             backends.get(backend_id).cleanup(rd, run.get('run_id') or rd.name)
         except Exception as error:  # noqa: BLE001
@@ -457,6 +540,7 @@ def clean(keep=None, default=20):
             if rd.name not in protected.values():
                 remove_backend_workspaces(rd, run)
                 make_writable_and_remove(rd)
+                make_writable_and_remove(artifact_store(project.name) / rd.name)
                 deleted.append(rd.name)
     return deleted, kept
 

@@ -14,6 +14,9 @@ report: true
 busy_paths: [artifacts/local-ci/*/summary.json]
 profiles:
   pr-native: {event: pull_request, jobs: [web, julia]}
+  # Phase 3: the release-candidate workflow natively (Playwright, the full release suite), then
+  #   easyci promote <run-id> --artifact debian-release-verification --to D:\Releases\JuliaFlow
+  rc-native: {event: workflow_dispatch, workflow: release-candidate.yml, jobs: [debian-release-gate]}
 jobs:
   execution-policy:
     skip: true                          # hosted-only gate; EasyCI decides locally
@@ -37,3 +40,29 @@ jobs:
     stall_minutes: 45                   # Pkg.instantiate and precompile are quiet
     services: {postgres: {version: 16}}
     env: *juliaflow-env
+    # The distro's VM has 4 GiB. JuliaFlow's own runner (scripts/ci/wsl-job.sh and wsl-julia.sh) gives
+    # Julia a 1500M heap-size hint and a temporary 3 GiB swap file for this job; without them the
+    # kernel kills the test process (exit 137). Do the same here, then release the swap file.
+    setup: &julia-memory |
+      prep="/var/tmp/easyci-$EASYCI_RUN_ID-$EASYCI_JOB"
+      mkdir -p "$prep/bin"
+      printf '#!/bin/sh\nexec %s --heap-size-hint=1500M "$@"\n' "$(command -v julia)" > "$prep/bin/julia"
+      chmod 755 "$prep/bin/julia"
+      echo "$prep/bin" >> "$GITHUB_PATH"
+      fallocate -l 3G "$prep/swap"
+      chmod 600 "$prep/swap"
+      mkswap "$prep/swap" > /dev/null
+      swapon "$prep/swap"
+      echo "julia wrapper with --heap-size-hint=1500M; 3 GiB swap at $prep/swap"
+    cleanup: &julia-release |
+      prep="/var/tmp/easyci-$EASYCI_RUN_ID-$EASYCI_JOB"
+      if [ -f "$prep/swap" ]; then swapoff "$prep/swap" 2>/dev/null || true; fi
+      rm -rf "$prep"
+  debian-release-gate:
+    when: always
+    timeout_minutes: 180
+    stall_minutes: 45
+    services: {postgres: {version: 16}}
+    env: *juliaflow-env
+    setup: *julia-memory
+    cleanup: *julia-release

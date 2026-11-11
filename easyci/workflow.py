@@ -1,5 +1,6 @@
 """Importer: .github/workflows/*.yml plus optional easyci.yml -> an ordered, honest plan."""
 import fnmatch
+import json
 import re
 
 import yaml
@@ -13,16 +14,20 @@ class ConfigError(Exception):
     pass
 
 
-TOP_KEYS = {'version', 'backend', 'report', 'pr_comment', 'profiles', 'jobs', 'retention', 'gpu', 'busy_paths',
+TOP_KEYS = {'version', 'backend', 'container_backend', 'report', 'pr_comment', 'profiles', 'jobs', 'retention', 'gpu',
+            'busy_paths',
+            'artifact_threshold_mb', 'data',
             'busy_stale_minutes',
             'busy_wait_minutes'}
 JOB_KEYS = {'skip', 'when', 'backend', 'command', 'timeout_minutes', 'stall_minutes', 'stall_action', 'skip_steps',
-            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes', 'services', 'env'}
+            'evidence', 'required_env', 'toolchains', 'on_kill', 'on_kill_minutes', 'services', 'env',
+            'setup', 'cleanup', 'cleanup_minutes'}
 SERVICES = {'postgres'}  # process-based services on the wsl backend (spec Phase 1; containers come in Phase 3)
 PROFILE_KEYS = {'event', 'jobs', 'workflow'}
 WORKFLOW_IGNORED = {'name', 'on', True, 'env', 'defaults', 'permissions', 'concurrency', 'jobs', 'run-name'}
 JOB_IGNORED = {'permissions', 'concurrency'}
-JOB_SUPPORTED = {'name', 'needs', 'if', 'runs-on', 'steps', 'env', 'defaults', 'outputs', 'timeout-minutes'} | JOB_IGNORED
+JOB_SUPPORTED = {'name', 'needs', 'if', 'runs-on', 'steps', 'env', 'defaults', 'outputs', 'timeout-minutes',
+                 'container', 'services'} | JOB_IGNORED
 STEP_KEYS = {'name', 'id', 'if', 'run', 'uses', 'with', 'env', 'shell', 'working-directory', 'continue-on-error',
              'timeout-minutes'}
 SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python': ('python', 'python-version'),
@@ -30,13 +35,13 @@ SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python':
          'actions/setup-go': ('go', 'go-version')}
 CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')  # local caches since Phase 1
 SHELLS = {'bash', 'sh', 'pwsh', 'powershell', 'cmd'}
-BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?)\Z')
+BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?|podman:[A-Za-z0-9._-]+)\Z')
 LOCKFILES = ('package-lock.json', 'Project.toml', 'Manifest.toml', 'uv.lock', 'poetry.lock')
 
 
 def backend_id(value, where):
     if not isinstance(value, str) or not BACKEND.match(value):
-        raise ConfigError(f'{where}: backend must be native, wsl or wsl:<distro> (got {value!r})')
+        raise ConfigError(f'{where}: backend must be native, wsl, wsl:<distro> or podman:<distro> (got {value!r})')
     return value
 
 
@@ -69,6 +74,12 @@ def load_config(text, source='easyci.yml'):
     if not isinstance(cfg.get('busy_paths', []), list) or not all(isinstance(p, str) and p.strip()
                                                                   for p in cfg.get('busy_paths', [])):
         raise ConfigError(f'{source}: busy_paths must be a list of glob strings')
+    if 'container_backend' in cfg and not str(cfg['container_backend']).startswith('podman:'):
+        raise ConfigError(f'{source}: container_backend must be podman:<distro>')
+    if 'artifact_threshold_mb' in cfg:
+        number(cfg['artifact_threshold_mb'], f'{source}: artifact_threshold_mb')
+    if not isinstance(cfg.get('data', []), list) or not all(isinstance(p, str) and p.strip() for p in cfg.get('data', [])):
+        raise ConfigError(f'{source}: data must be a list of paths or globs')
     for key in ('busy_stale_minutes', 'busy_wait_minutes'):
         if key in cfg:
             number(cfg[key], f'{source}: {key}')
@@ -91,10 +102,10 @@ def load_config(text, source='easyci.yml'):
             raise ConfigError(f'{where}.stall_action must be mark or kill')
         if 'backend' in job:
             backend_id(job['backend'], where)
-        for key in ('timeout_minutes', 'stall_minutes', 'on_kill_minutes'):
+        for key in ('timeout_minutes', 'stall_minutes', 'on_kill_minutes', 'cleanup_minutes'):
             if key in job:
                 number(job[key], f'{where}.{key}')
-        for key in ('command', 'on_kill'):
+        for key in ('command', 'on_kill', 'setup', 'cleanup'):
             if key in job and (not isinstance(job[key], str) or not job[key].strip()):
                 raise ConfigError(f'{where}.{key} must be a non-empty string')
         for key in ('evidence', 'required_env', 'skip_steps'):
@@ -244,7 +255,7 @@ def resolve_shell(step_shell, defaults, backend, runs_on):
         shell = 'pwsh' if backend == 'native' and 'windows' in runs_on else 'bash'
     if shell not in SHELLS:
         raise Unsupported(f'unsupported_shell:{shell}')
-    if backend.startswith('wsl') and shell in ('pwsh', 'powershell', 'cmd'):
+    if str(backend).startswith(('wsl', 'podman:')) and shell in ('pwsh', 'powershell', 'cmd'):
         raise Unsupported(f'unsupported_shell:{shell} on {backend}')
     return shell
 
@@ -350,6 +361,42 @@ def plan_step(index, step, ctx):
     else:
         raise Unsupported(f'unsupported_uses:{uses or "?"}')
     return out
+
+
+def plan_containers(job, ctx):
+    """(container | None, {service id: spec}) from a job's `container:` and `services:` keys."""
+    from easyci.backends.podman import parse_options
+
+    def spec(value, where):
+        value = {'image': value} if isinstance(value, str) else value
+        if not isinstance(value, dict) or not value.get('image'):
+            raise Unsupported(f'unsupported_container:{where} needs an image')
+        extra = set(value) - {'image', 'env', 'ports', 'options'}
+        if extra:
+            raise Unsupported(f'unsupported_container:{where}.{sorted(extra)[0]}')
+        # Containers start before any step runs, so only github, matrix and strategy are known; a value
+        # from needs/env/steps/... would silently become empty. Say so instead.
+        for found in re.findall(r'\$\{\{(.*?)\}\}', json.dumps(value)):
+            late = re.findall(r'\b(needs|env|steps|secrets|vars|inputs|job|runner)\.', found)
+            if late:
+                raise Unsupported(f'unsupported_container:{where} uses {late[0]} (only github and matrix are known '
+                                  'when containers start)')
+        value = expr.interpolate(dict(value), ctx)
+        try:
+            parse_options(value.get('options'))
+        except ValueError as error:
+            raise Unsupported(f'unsupported_container:{where} options {error}') from None
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:@-]*', str(value['image'])):
+            raise Unsupported(f'unsupported_container:{where} image {value["image"]}')
+        return {'image': str(value['image']), 'env': {k: expr.to_str(v) for k, v in (value.get('env') or {}).items()},
+                'ports': list(value.get('ports') or []), 'options': value.get('options') or ''}
+    container = spec(job['container'], 'container') if job.get('container') else None
+    services = {}
+    for sid, value in (job.get('services') or {}).items():
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]*', str(sid)):
+            raise Unsupported(f'unsupported_container:service name {sid}')
+        services[str(sid)] = spec(value, f'services.{sid}')
+    return container, services
 
 
 MAX_MATRIX = 256
@@ -470,6 +517,7 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
                           for layer in (wf.get('env'), job.get('env'), jcfg.get('env'))],
            'services': {k: dict(v or {}) for k, v in (jcfg.get('services') or {}).items()},
            'command': jcfg.get('command'), 'on_kill': jcfg.get('on_kill'),
+           'cleanup': jcfg.get('cleanup'), 'cleanup_minutes': jcfg.get('cleanup_minutes', 10),
            'on_kill_minutes': jcfg.get('on_kill_minutes', 10), 'evidence': list(jcfg.get('evidence', [])),
            'required_env': list(jcfg.get('required_env', [])), 'toolchain_policy': dict(jcfg.get('toolchains', {})),
            'unsupported': reasons, 'notes': notes, 'group': jid, 'matrix': matrix or {}, 'strategy': strategy or {}}
@@ -491,9 +539,25 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
     except Unsupported as error:
         reasons.append(str(error))
         backend = backend or 'native'
+    try:
+        out['container'], out['gh_services'] = plan_containers(job, {'github': gh, 'matrix': matrix or {},
+                                                                     'strategy': strategy or {}})
+    except Unsupported as error:
+        reasons.append(str(error))
+        out['container'], out['gh_services'] = None, {}
+    if (out['container'] or out['gh_services']) and not str(backend).startswith('podman:'):
+        if cfg.get('container_backend') and 'backend' not in jcfg and not inp.get('backend'):
+            backend, why = cfg['container_backend'], 'container/services: container_backend from easyci.yml'
+        else:
+            reasons.append('unsupported_container:container/services need a podman backend '
+                           '(set container_backend: podman:<distro> in easyci.yml)')
     out['backend'], out['backend_reason'] = backend, why
-    if out['services'] and not str(backend).startswith('wsl'):
+    if out['services'] and not str(backend).startswith(('wsl', 'podman')):
         reasons.append(f'unsupported_services:{",".join(out["services"])} needs a wsl backend')
+    if out['services'] and out['container']:
+        # easyci.yml services run in the distro on 127.0.0.1, which a job container cannot reach.
+        reasons.append(f'unsupported_services:{",".join(out["services"])} from easyci.yml cannot be reached from a '
+                       'job container; declare the service under the workflow job services: instead')
     if out['skip']:
         notes.append('skipped by easyci.yml')
         return out
@@ -515,6 +579,7 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
                          'kind': 'run', 'run': out['command'], 'shell': 'bash',
                          'decision': 'easyci.yml command replaces every workflow step'}]
         notes.append('steps replaced by easyci.yml command; uses: not evaluated')
+        add_setup_step(out, jcfg)
         return out
     for key in sorted(set(job) - JOB_SUPPORTED):
         if key == 'strategy':
@@ -544,7 +609,19 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
                                       'if': mapped.get('if')})
     if not out['steps']:
         reasons.append('unsupported_job:no steps')
+    add_setup_step(out, jcfg)
     return out
+
+
+def add_setup_step(out, jcfg):
+    """easyci.yml `setup:` runs first, as step 0, with the job's environment. It can prepare the
+    machine the way a project's own runner does (a swap file, a wrapper on $GITHUB_PATH) without
+    changing the workflow. If it fails, the job fails there."""
+    if jcfg.get('setup'):
+        out['steps'].insert(0, {'index': 0, 'name': 'easyci.yml setup', 'id': None, 'if': None, 'env': {},
+                                'continue_on_error': False, 'timeout_minutes': None, 'working_directory': None,
+                                'kind': 'run', 'run': jcfg['setup'], 'shell': 'bash',
+                                'decision': 'added by easyci.yml setup'})
 
 
 def members(jobs, group):
@@ -646,7 +723,8 @@ def build_plan(workflows, cfg, inp):
         job['reported'] = (job['group'] in selection) if selection else not job['skip']
     plan = {'event': inp['event'], 'profile': profile, 'workflow': inp.get('workflow'), 'github': gh,
             'workflows': plan_wfs, 'jobs': ordered, 'gpu': cfg.get('gpu', 'optional'),
-            'report': cfg.get('report', True), 'pr_comment': bool(cfg.get('pr_comment', False))}
+            'report': cfg.get('report', True), 'pr_comment': bool(cfg.get('pr_comment', False)),
+            'artifact_threshold_mb': cfg.get('artifact_threshold_mb', 100), 'data': list(cfg.get('data', []))}
     predict(plan)
     return plan
 

@@ -6,6 +6,7 @@ after this process is gone).
 import os
 import pathlib
 import posixpath
+import shutil
 import re
 import signal
 import sys
@@ -43,9 +44,9 @@ def ignore_console_signals():
         ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
 
 
-def toolchain_problem(job, tool, probe):
+def toolchain_problem(job, tool, probe, where=None):
     """(reason, fix) when the backend lacks the requested toolchain, else None."""
-    where = job['backend'].replace('wsl:', 'WSL distro ')
+    where = where or job['backend'].replace('wsl:', 'WSL distro ')
     actual = probe.get(tool['tool'])
     if not actual:
         return (f'toolchain_missing:{tool["tool"]}',
@@ -252,6 +253,8 @@ class Supervisor:
         try:
             self.run['tree'] = snapshot.make_bundle(repo, commit, base, self.rd / 'source.bundle')
             self.run['bundle_sha256'] = store.digest(self.rd / 'source.bundle')
+            if self.plan.get('data'):
+                self.run['data'] = store.data_hashes(repo, self.plan['data'], self.run['commit'])
         except (snapshot.GitError, OSError) as error:
             self.fail_all('failed', f'snapshot_failed:{error}')
             raise Cancelled from None
@@ -324,8 +327,8 @@ class Supervisor:
         if missing:
             return 'unsupported', f'missing_env:{missing[0]}', f'Set {missing[0]} before running easyci run.'
         for tool in job['toolchains']:
-            if tool.get('if') not in (None, ''):
-                continue  # a conditional setup step is checked when (and if) it actually runs
+            if tool.get('if') not in (None, '') or job.get('container'):
+                continue  # checked when the step runs: conditional ones only if enabled, container jobs in the image
             problem = toolchain_problem(job, tool, probe)
             if problem:
                 return ('unsupported', *problem)
@@ -369,6 +372,13 @@ class Supervisor:
         try:
             self.marker(f'job {jid} on {job["backend"]} ({self.run.get("platforms", {}).get(job["backend"], "")})')
             self.service_env = {}
+            self.job_services = {}
+            if job.get('container') or job.get('gh_services'):
+                self.marker('starting containers: ' + ', '.join(
+                    ([f'job container {job["container"]["image"]}'] if job.get('container') else []) +
+                    [f'{sid} ({spec["image"]})' for sid, spec in job.get('gh_services', {}).items()]))
+                self.job_services = backend.start_job(self.run_id, jid, ws, job_dir, job.get('container'),
+                                                      job.get('gh_services'))
             if job.get('services'):
                 self.service_env = backend.start_services(job['services'], self.run_id, jid)
                 # The generated password is masked everywhere, including inside DATABASE_URL.
@@ -377,7 +387,7 @@ class Supervisor:
                             f'(DATABASE_URL on port {self.service_env.get("PGPORT")})')
             if job['command']:
                 self.marker('cloning the run commit into a clean workspace')
-                backend.checkout(ws, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
+                backend.checkout(ws, self.rd / 'source.bundle', self.run['commit'], self.run['tree'], self.origin_refs())
             else:
                 backend.mkdirs(ws)
             outcome = self.run_steps(job, jr, backend, ws, job_dir, needs, deadline, steps_record)
@@ -386,6 +396,16 @@ class Supervisor:
             self.marker(f'EasyCI error: {error}')
             outcome = outcome or ('failed', f'internal_error:{self.mask(error)[:120]}')
         finally:
+            # Hooks run while the job's container, services and workspace still exist; then everything
+            # the job (and its hooks) left running is stopped.
+            try:
+                if self.kill_reason and job.get('on_kill') and self.step_env is not None:
+                    self.run_on_kill(job, jr, backend, ws, job_dir)
+                if job.get('cleanup') and self.step_env is not None:
+                    self.run_hook(jr, backend, ws, job_dir, 'cleanup', job['cleanup'], job.get('cleanup_minutes') or 10,
+                                  {'EASYCI_JOB_STATE': outcome[0] if outcome else 'failed'})
+            except Exception as error:  # noqa: BLE001 - a hook never stops teardown
+                self.marker(f'hook error: {error}')
             backend.end_job()
             if job.get('services'):
                 try:
@@ -400,8 +420,6 @@ class Supervisor:
                     self.marker(f'cache {"saved" if saved else "not saved (key exists or nothing to store)"}: {key}')
                 except Exception as error:  # noqa: BLE001 - a cache failure never fails the job
                     self.marker(f'cache save failed: {error}')
-        if self.kill_reason and job.get('on_kill') and self.step_env is not None:
-            self.run_on_kill(job, jr, backend, ws, job_dir)
         try:
             if job['evidence']:
                 copied = backend.collect(ws, job['evidence'], job_dir / 'artifacts' / 'evidence', layout='workspace')
@@ -425,18 +443,27 @@ class Supervisor:
         before evidence is collected and the workspace is removed, is not itself cancellable, has its
         own time limit, and never changes the job's state."""
         reason = self.kill_reason
-        limit_min = float(job.get('on_kill_minutes') or 10)
         self.marker(f'running on_kill cleanup (job stopped: {reason})')
-        env = {**self.step_env, 'EASYCI_KILL_REASON': reason}
+        self.run_hook(jr, backend, ws, job_dir, 'on_kill', job['on_kill'], job.get('on_kill_minutes') or 10,
+                      {'EASYCI_KILL_REASON': reason}, {'reason': reason})
+
+    def run_hook(self, jr, backend, ws, job_dir, name, script, limit_min, extra_env, record=None):
+        """Run an easyci.yml hook (on_kill, cleanup) in the job's workspace and environment. It is not
+        cancellable, has its own time limit, and never changes the job's state; its exit code is
+        recorded on the job."""
+        limit_min = float(limit_min)
+        if name != 'on_kill':
+            self.marker(f'running {name}')
+        env = {**self.step_env, **extra_env}
         started, timed_out, code = time.time(), False, None
         try:
-            proc = backend.start('bash', job['on_kill'], env, ws, job_dir, 'on_kill')
+            proc = backend.start('bash', script, env, ws, job_dir, name)
             thread = self.stream(proc)
             while proc.popen.poll() is None and time.time() < started + limit_min * 60:
                 time.sleep(poll_s())
             if proc.popen.poll() is None:
                 timed_out = True
-                self.marker(f'on_kill exceeded {limit_min:g} minutes; stopping it')
+                self.marker(f'{name} exceeded {limit_min:g} minutes; stopping it')
                 backend.kill(proc)
                 try:
                     proc.popen.wait(timeout=30)
@@ -445,14 +472,12 @@ class Supervisor:
             thread.join(timeout=10)
             code = proc.popen.returncode
         except Exception as error:  # noqa: BLE001 - reported, never fatal
-            self.marker(f'on_kill error: {error}')
-        finally:
-            backend.end_job()
+            self.marker(f'{name} error: {error}')
         elapsed = round(time.time() - started, 1)
         self.scrub_scripts(job_dir)
-        jr['on_kill'] = {'reason': reason, 'exit_code': code, 'timed_out': timed_out, 'elapsed_s': elapsed}
+        jr[name] = {**(record or {}), 'exit_code': code, 'timed_out': timed_out, 'elapsed_s': elapsed}
         exit_text = '' if code is None else f' (exit {code})'
-        self.marker(f'on_kill {"passed" if code == 0 else "failed"}{exit_text} after {elapsed}s')
+        self.marker(f'{name} {"passed" if code == 0 else "failed"}{exit_text} after {elapsed}s')
         self.save()
 
     def marker(self, text):
@@ -461,7 +486,7 @@ class Supervisor:
         self.last_output = time.time()
 
     def run_steps(self, job, jr, backend, ws, job_dir, needs, deadline, record):
-        is_wsl = job['backend'].startswith('wsl')
+        is_wsl = backends.is_linux(job['backend'])  # wsl: and podman: steps run on Linux
         join = posixpath.join if is_wsl else os.path.join
         gh = self.plan['github']
         runner_os = 'Linux' if is_wsl else 'Windows'
@@ -483,7 +508,7 @@ class Supervisor:
         base_env.update(getattr(self, 'service_env', {}) or {})
         ctx = {'github': gh, 'needs': needs, 'runner': {'os': runner_os, 'arch': 'X64', 'temp': base_env['RUNNER_TEMP']},
                'steps': {}, 'env': dict(passed), 'matrix': job.get('matrix') or {}, 'strategy': job.get('strategy') or {},
-               'job': {'status': 'success'}, '__hash_files__': lambda patterns: backend.hash_files(ws, patterns)}
+               'job': {'status': 'success', 'services': getattr(self, 'job_services', {}) or {}}, '__hash_files__': lambda patterns: backend.hash_files(ws, patterns)}
         job_env = dict(passed)
         for layer in job.get('env_layers') or [job['env']]:  # workflow env first, then job env
             job_env.update(expr.interpolate(layer, {**ctx, 'env': dict(job_env)}))
@@ -495,7 +520,8 @@ class Supervisor:
             index = step['index']
             rec = {'index': index, 'name': step['name'], 'kind': step['kind'], 'started_at': store.iso()}
             record.append(rec)
-            ctx.update(status=status, env={**job_env, **extra_env}, job={'status': status})  # job_env holds `passed`
+            ctx.update(status=status, env={**job_env, **extra_env},
+                       job={'status': status, 'services': getattr(self, 'job_services', {}) or {}})  # job_env holds `passed`
             if self.cancelled():
                 rec['outcome'] = 'cancelled'
                 return 'cancelled', 'cancelled'
@@ -531,6 +557,9 @@ class Supervisor:
                                                              'conclusion': rec['conclusion']}
             extra_env.update(result.get('env', {}))
             extra_path[:0] = list(reversed(result.get('path', [])))  # later additions come first, as on GitHub
+            # Hooks (cleanup, on_kill) see the job's environment including this step's exports.
+            self.step_env = {**base_env, **job_env, **extra_env,
+                             **({'EASYCI_PATH_PREPEND': PATH_SEP[is_wsl].join(extra_path)} if extra_path else {})}
             jr['steps_done'] = index
             if result.get('outcome') in ('timed_out', 'cancelled', 'stalled'):
                 jr['failed_step'] = {'index': index, 'name': name}
@@ -561,13 +590,23 @@ class Supervisor:
                 self.marker(f'checkout path {path!r} must be a relative path inside the workspace; refusing it')
                 return False, {'exit_code': 1}
             target = join(ws, path) if path else ws
-            backend.checkout(target, self.rd / 'source.bundle', self.run['commit'], self.run['tree'])
+            backend.checkout(target, self.rd / 'source.bundle', self.run['commit'], self.run['tree'], self.origin_refs())
             self.marker(f'checked out {self.run["commit"]} (tree {self.run["tree"]})')
             return True, {}
         if kind == 'toolchain':
-            probe = self.probes.get(job['backend'], {})
             entry = next((t for t in job['toolchains'] if t.get('step') == step['index']), None)
-            problem = toolchain_problem(job, entry, probe) if entry and entry.get('if') not in (None, '') else None
+            if job.get('container') and getattr(backend, 'container', None):
+                # The steps run in the job's image, so that is where the toolchain must be.
+                probe = backend.probe_in_container([step['tool']])
+                where = f'the job container image {job["container"]["image"]}'
+                # Recorded on the job (and so in the sealed report): the version this image really has,
+                # not the distro's from run.toolchains.
+                jr.setdefault('toolchains', {})[step['tool']] = {'version': probe.get(step['tool']),
+                                                                 'image': job['container']['image']}
+                problem = toolchain_problem(job, entry, probe, where) if entry else None
+            else:
+                probe = self.probes.get(job['backend'], {})
+                problem = toolchain_problem(job, entry, probe) if entry and entry.get('if') not in (None, '') else None
             if problem:  # a conditional setup step that is now enabled: enforce it here
                 self.marker(f'{problem[0]}. {problem[1]}')
                 return False, {'exit_code': 1}
@@ -584,8 +623,11 @@ class Supervisor:
             with_ = expr.interpolate(step['with'], {**ctx, 'env': {**ctx['env'], **step_env}})
             name = store.artifact_dir_name(with_.get('name') or 'artifact')
             paths = [p for p in str(with_.get('path', '')).splitlines() if p.strip()]
+            self.reclaim_artifact(job_dir, name)
             copied = backend.collect(ws, paths, job_dir / 'artifacts' / name)
             self.marker(f'artifact {name}: {len(copied)} file(s)')
+            if copied or (job_dir / 'artifacts' / name).is_dir():
+                self.offload_artifact(job_dir, name)
             if not copied and with_.get('if-no-files-found', 'warn') == 'error':
                 self.marker(f'no files found for {paths} (if-no-files-found: error)')
                 return False, {'exit_code': 1}
@@ -622,6 +664,46 @@ class Supervisor:
             return False, result
         return proc.popen.returncode == 0, result
 
+    def reclaim_artifact(self, job_dir, name):
+        """A second upload to an artifact that was moved to the artifact store: bring its files back and
+        drop the pointer, so the new files are added as for any artifact and the whole is sized again.
+        Otherwise the old pointer would win over the newer files at promote time."""
+        pointer = job_dir / 'artifacts' / f'{name}.pointer.json'
+        info = store.read_pointer(pointer)
+        if info is None:
+            return
+        location = pathlib.Path(info['location'])
+        if location.is_dir():
+            shutil.copytree(location, job_dir / 'artifacts' / name, dirs_exist_ok=True)
+            shutil.rmtree(location, ignore_errors=True)
+        store.remove_file(pointer)
+
+    def offload_artifact(self, job_dir, name):
+        """Move an artifact over artifact_threshold_mb out of the run folder into the artifact store
+        (%EASYCI_HOME%/artifacts/<project>/<run>/<job>/<name>, DVC-friendly), leaving a pointer with
+        every file's sha256. The pointer is sealed with the run; `easyci verify` checks the files."""
+        folder = job_dir / 'artifacts' / name
+        files = [p for p in folder.rglob('*') if p.is_file()]
+        size = sum(p.stat().st_size for p in files)
+        if size <= float(self.plan.get('artifact_threshold_mb', 100)) * 2 ** 20:
+            return
+        target = store.artifact_store(self.run['project']) / self.run_id / job_dir.name / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        hashes = {p.relative_to(folder).as_posix(): store.digest(p) for p in files}
+        shutil.move(str(folder), str(target))
+        store.write_json(job_dir / 'artifacts' / f'{name}.pointer.json',
+                         {'schema': 'easyci/1', 'kind': 'artifact-pointer', 'name': name, 'location': str(target),
+                          'size_bytes': size, 'files': hashes})
+        self.marker(f'artifact {name} is {size / 2 ** 20:.0f} MB; stored outside the run folder: {target}')
+
+    def origin_refs(self):
+        """refs/remotes/origin/<default branch> at the base commit (which the bundle always holds)."""
+        default = ((self.plan.get('github') or {}).get('event') or {}).get('repository', {}).get('default_branch')
+        base = self.run.get('base')
+        if default and base and re.fullmatch(r'[A-Za-z0-9._/-]+', default):
+            return {f'refs/remotes/origin/{default}': base}
+        return {}
+
     def step_inputs(self, step, ctx, env):
         step_env = expr.interpolate(step.get('env') or {}, {**ctx, 'env': env})
         return expr.interpolate(step.get('with') or {}, {**ctx, 'env': {**ctx['env'], **step_env}})
@@ -633,6 +715,13 @@ class Supervisor:
         if not key:
             self.marker('cache key is empty after evaluation; skipping the cache')
             return True, {'outputs': {'cache-hit': 'false'}}
+        if getattr(backend, 'container', None):
+            # The cache store lives in the distro, not in the job's image; a hit there would not put the
+            # files in the container. Always a miss (install steps run), never saved.
+            self.marker(f'cache not used inside a job container; treated as a miss: {key}')
+            if str(with_.get('fail-on-cache-miss', 'false')).lower() == 'true' and step['variant'] != 'save':
+                return False, {'exit_code': 1, 'outputs': {'cache-hit': 'false'}}
+            return True, {'outputs': {'cache-hit': 'false', 'cache-primary-key': key, 'cache-matched-key': ''}}
         store_ = backend.cache(self.run['project'])
         if step['variant'] == 'save':
             saved = store_.save(ws, paths, key)
@@ -653,7 +742,16 @@ class Supervisor:
         if path and not inside_workspace(path):
             self.marker(f'download path {path!r} must be a relative path inside the workspace; refusing it')
             return False, {'exit_code': 1}
-        roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
+        # Job by job, local folders then offloaded ones, as promote reads them: when two jobs upload the
+        # same name, the same files win in a download and in a promotion, offloaded or not.
+        roots = []
+        for job_dir in sorted(p for p in (self.rd / 'jobs').glob('*') if p.is_dir()):
+            roots += sorted(p for p in (job_dir / 'artifacts').glob('*') if p.is_dir() and p.name != 'evidence')
+            for pointer in sorted((job_dir / 'artifacts').glob('*.pointer.json')):  # offloaded big artifacts
+                info = store.read_pointer(pointer)
+                location = pathlib.Path(info['location']) if info else None
+                if location and location.is_dir():
+                    roots.append(location)
         chosen = [p for p in roots if p.name == store.artifact_dir_name(name)] if name else roots
         if name and not chosen:
             self.marker(f'artifact {name} was not uploaded earlier in this run')

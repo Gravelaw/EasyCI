@@ -94,6 +94,14 @@ class Wsl:
         return f'{self.id}:{text}' if code == 0 else self.id
 
     def probe(self, tools):
+        code, text = wsl_run(self.distro, self.probe_script(tools), timeout=120)
+        found = dict(line.split('=', 1) for line in text.splitlines() if '=' in line) if code == 0 else {}
+        keys = [*tools, 'julia_depot'] if 'julia' in tools else tools
+        return {tool: (found.get(tool) or '').strip() or None for tool in keys}
+
+    @staticmethod
+    def probe_script(tools):
+        """A POSIX sh script printing `tool=<first version line>` for each tool."""
         lines = []
         for tool in tools:
             exe = PROBE_TOOLS.get(tool, tool)
@@ -102,10 +110,7 @@ class Wsl:
                          f'{shlex.quote(exe)} {flag} 2>&1 | grep -m 1 .; else echo; fi')  # first non-empty line (gradle starts blank)
         if 'julia' in tools:
             lines.append('printf "julia_depot=%s\\n" "${JULIA_DEPOT_PATH:-$HOME/.julia}"')
-        code, text = wsl_run(self.distro, '\n'.join(lines), timeout=120)
-        found = dict(line.split('=', 1) for line in text.splitlines() if '=' in line) if code == 0 else {}
-        keys = [*tools, 'julia_depot'] if 'julia' in tools else tools
-        return {tool: (found.get(tool) or '').strip() or None for tool in keys}
+        return '\n'.join(lines)
 
     def to_backend_path(self, win_path):
         return to_linux(win_path)
@@ -113,13 +118,15 @@ class Wsl:
     def workspace(self, rd, run_id, job):
         return f'{self.home()}/.easyci/work/{run_id}/{job}'
 
-    def checkout(self, ws, bundle, commit, tree):
+    def checkout(self, ws, bundle, commit, tree, refs=None):
         q = shlex.quote
+        update = ''.join(f'; git update-ref {q(ref)} {q(sha)}' for ref, sha in (refs or {}).items()
+                         if re.fullmatch(r'refs/[A-Za-z0-9._/-]+', ref) and re.fullmatch(r'[0-9a-f]{40}', sha))
         script = (f'set -e; rm -rf {q(ws)}; mkdir -p "$(dirname {q(ws)})"; '
                   f'export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0; '
                   f'git -c core.hooksPath= -c credential.helper= clone --quiet --no-hardlinks --no-checkout '
                   f'{q(to_linux(bundle))} {q(ws)}; cd {q(ws)}; git -c core.hooksPath= checkout --quiet --detach {commit}; '
-                  f'test "$(git rev-parse HEAD^{{tree}})" = {tree}')
+                  f'test "$(git rev-parse HEAD^{{tree}})" = {tree}{update}')
         code, text = wsl_run(self.distro, script, timeout=1800)
         if code != 0:
             raise RuntimeError(f'clone inside {self.distro} failed: {text[-300:]}')
@@ -130,16 +137,17 @@ class Wsl:
     def exists(self, path):
         return wsl_run(self.distro, f'test -d {shlex.quote(path)}')[0] == 0
 
-    def start(self, shell, body, env, cwd, job_dir, index):
+    def start(self, shell, body, env, cwd, job_dir, index, command=None):
         steps = pathlib.Path(job_dir) / 'steps'
         steps.mkdir(parents=True, exist_ok=True)
         script, wrapper, pgid = steps / f'{index}.sh', steps / f'{index}.wrap.sh', steps / f'{index}.pgid'
         script.write_bytes(body.replace('\r\n', '\n').encode('utf-8'))
         run = 'bash --noprofile --norc -eo pipefail' if shell == 'bash' else 'sh -e'
         q = shlex.quote
+        last = command or f'exec {run} {q(to_linux(script))}'
         wrapper.write_bytes((f'echo $$ > {q(to_linux(pgid))}\ncd {q(cwd)} || exit 1\n'
                              '[ -n "${EASYCI_PATH_PREPEND:-}" ] && export PATH="$EASYCI_PATH_PREPEND:$PATH"\n'
-                             f'exec {run} {q(to_linux(script))}\n').encode('utf-8'))
+                             f'{last}\n').encode('utf-8'))
         names = [k for k in env if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)]
         full_env = {**os.environ, **{k: env[k] for k in names}, 'WSLENV': ':'.join(names)}
         popen = subprocess.Popen([wsl_exe(), '-d', self.distro, '--exec', 'setsid', '--wait', 'bash', to_linux(wrapper)],
