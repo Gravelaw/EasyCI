@@ -474,6 +474,11 @@ def data_hashes(repo, patterns, commit=None):
         regex = _glob_regex(pattern)
         rels |= {t for t in tracked if regex.match(t)}
         for rel in sorted(rels):
+            if rel not in tracked and not rel.endswith('.dvc'):
+                # Untracked data can be large: hash it in chunks, never read it whole into memory.
+                path = root / rel
+                out[rel] = {'sha256': digest(path), 'size': path.stat().st_size, 'source': 'working tree'}
+                continue
             if rel in tracked:
                 data, source = snapshot.show(repo, commit, rel) or b'', 'commit'
             else:

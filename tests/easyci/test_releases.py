@@ -181,3 +181,15 @@ class OffloadedExtras(EasyCITest):
                     '      - run: cat got/s.txt\n')
         repo, run_id = OffloadedExtras.passed_run(self, workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
         self.assertEqual(self.call('verify', run_id)[0], 0)
+
+    def test_untracked_data_is_hashed_without_reading_it_whole(self):
+        # Review finding: a large untracked dataset was read into memory in one piece.
+        from unittest import mock
+        repo = self.make_repo(None, {'README.md': 'x\n'}, name='bigdata')
+        big = pathlib.Path(repo) / 'data' / 'big.bin'
+        big.parent.mkdir()
+        big.write_bytes(b'\0' * (3 * 2 ** 20))
+        with mock.patch.object(pathlib.Path, 'read_bytes', side_effect=MemoryError('whole-file read')):
+            hashes = store.data_hashes(repo, ['data'], self.git(repo, 'rev-parse', 'HEAD'))
+        self.assertEqual(hashes['data/big.bin'], {'sha256': store.digest(big), 'size': 3 * 2 ** 20,
+                                                  'source': 'working tree'})
