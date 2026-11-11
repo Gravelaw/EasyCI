@@ -742,12 +742,16 @@ class Supervisor:
         if path and not inside_workspace(path):
             self.marker(f'download path {path!r} must be a relative path inside the workspace; refusing it')
             return False, {'exit_code': 1}
-        roots = sorted(p for p in (self.rd / 'jobs').glob('*/artifacts/*') if p.is_dir() and p.name != 'evidence')
-        for pointer in sorted((self.rd / 'jobs').glob('*/artifacts/*.pointer.json')):  # offloaded big artifacts
-            info = store.read_pointer(pointer)
-            location = pathlib.Path(info['location']) if info else None
-            if location and location.is_dir():
-                roots.append(location)
+        # Job by job, local folders then offloaded ones, as promote reads them: when two jobs upload the
+        # same name, the same files win in a download and in a promotion, offloaded or not.
+        roots = []
+        for job_dir in sorted(p for p in (self.rd / 'jobs').glob('*') if p.is_dir()):
+            roots += sorted(p for p in (job_dir / 'artifacts').glob('*') if p.is_dir() and p.name != 'evidence')
+            for pointer in sorted((job_dir / 'artifacts').glob('*.pointer.json')):  # offloaded big artifacts
+                info = store.read_pointer(pointer)
+                location = pathlib.Path(info['location']) if info else None
+                if location and location.is_dir():
+                    roots.append(location)
         chosen = [p for p in roots if p.name == store.artifact_dir_name(name)] if name else roots
         if name and not chosen:
             self.marker(f'artifact {name} was not uploaded earlier in this run')
