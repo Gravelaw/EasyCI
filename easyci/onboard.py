@@ -274,10 +274,10 @@ def workflow_text(stacks, have, linux, default_branch='main'):
             'name: ci\n\non:\n  push:\n    branches: [' + default_branch + ']\n  pull_request:\n\njobs:\n' + jobs)
 
 
-def easyci_yml_text(stacks, backend):
+def easyci_yml_text(stacks, backend, starter=True):
     lines = ['# Written by `easyci setup`. All keys are explained in docs/usage.md of EasyCI.',
              'version: 1', f'backend: {backend}', 'report: true']
-    if any(s['stack'] == 'julia' for s in stacks):
+    if starter and any(s['stack'] == 'julia' for s in stacks):  # only the `julia` job setup itself writes
         lines += ['jobs:', '  julia:', '    stall_minutes: 45   # Pkg.instantiate and precompile are quiet']
     return '\n'.join(lines) + '\n'
 
@@ -298,7 +298,7 @@ def plan(repo, probes=None):
     if not workflows and stacks:
         files.append({'path': '.github/workflows/ci.yml', 'text': workflow_text(stacks, choice['have'], linux, default)})
     if not (root / 'easyci.yml').exists() and choice:
-        files.append({'path': 'easyci.yml', 'text': easyci_yml_text(stacks, choice['backend'])})
+        files.append({'path': 'easyci.yml', 'text': easyci_yml_text(stacks, choice['backend'], starter=not workflows)})
     return {'repo': str(root), 'has_commits': bool(commit), 'workflows': workflows,
             'stacks': [{**s, 'label': LABELS[s['stack']]} for s in stacks], 'backend': choice,
             'files': files}
