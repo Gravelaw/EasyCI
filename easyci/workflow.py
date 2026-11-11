@@ -1,5 +1,6 @@
 """Importer: .github/workflows/*.yml plus optional easyci.yml -> an ordered, honest plan."""
 import fnmatch
+import json
 import re
 
 import yaml
@@ -369,6 +370,13 @@ def plan_containers(job, ctx):
         extra = set(value) - {'image', 'env', 'ports', 'options'}
         if extra:
             raise Unsupported(f'unsupported_container:{where}.{sorted(extra)[0]}')
+        # Containers start before any step runs, so only github, matrix and strategy are known; a value
+        # from needs/env/steps/... would silently become empty. Say so instead.
+        for found in re.findall(r'\$\{\{(.*?)\}\}', json.dumps(value)):
+            late = re.findall(r'\b(needs|env|steps|secrets|vars|inputs|job|runner)\.', found)
+            if late:
+                raise Unsupported(f'unsupported_container:{where} uses {late[0]} (only github and matrix are known '
+                                  'when containers start)')
         value = expr.interpolate(dict(value), ctx)
         try:
             parse_options(value.get('options'))

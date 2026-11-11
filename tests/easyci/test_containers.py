@@ -53,6 +53,17 @@ class ContainerPlanning(unittest.TestCase):
                 job = plan(text, {'container_backend': 'podman:boxes'})
                 self.assertEqual(job['predicted_reason'], reason)
 
+    def test_values_known_only_at_run_time_are_refused(self):
+        # Review finding: `${{ needs.x.outputs.y }}` in a service became an empty string at planning.
+        text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    services:\n      db:\n'
+                '        image: postgres:16\n        env: {POSTGRES_DB: "${{ needs.config.outputs.database }}"}\n'
+                '    steps: [{run: x}]\n')
+        job = plan(text, {'container_backend': 'podman:boxes'})
+        self.assertTrue(job['predicted_reason'].startswith('unsupported_container:services.db uses needs'),
+                        job['predicted_reason'])
+        ok = text.replace('${{ needs.config.outputs.database }}', 'db-${{ github.sha }}')
+        self.assertEqual(plan(ok, {'container_backend': 'podman:boxes'})['predicted'], 'run')
+
     def test_option_and_port_parsing(self):
         self.assertEqual(parse_options('--health-cmd "pg_isready -U x" --health-interval=5s'),
                          ['--health-cmd', 'pg_isready -U x', '--health-interval', '5s'])

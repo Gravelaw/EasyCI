@@ -150,6 +150,8 @@ jobs:
         uses: actions/cache@v4
         with: {path: ~/.npm, key: container-key}
       - run: echo "container-cache-hit=${{ steps.c.outputs.cache-hit }}"
+      - working-directory: /etc/apk
+        run: echo "inside=$PWD"
   tools:
     runs-on: ubuntu-latest
     container: docker.io/library/alpine:3.20
@@ -173,6 +175,7 @@ jobs:
         # Review finding: the distro's cache store is not the container's filesystem; always a miss there.
         self.assertIn('cache not used inside a job container', log)
         self.assertIn('container-cache-hit=false', log)
+        self.assertIn("inside=/etc/apk", log)  # exists only in the alpine image, not in the distro
         # The distro has python3; the image does not. The image decides, at the step.
         self.assertEqual((jobs['tools']['state'], jobs['tools']['failed_step']['index']), ('failed', 1), jobs['tools'])
         self.assertIn('the job container image docker.io/library/alpine:3.20',

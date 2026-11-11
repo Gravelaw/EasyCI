@@ -166,7 +166,9 @@ class Podman(Wsl):
         else:
             run = "sh -c '" + prepend + "exec sh -e \"$0\"' " + script_path
         wrapped = f'exec podman exec -i {exec_env} -w {shlex.quote(cwd)} {self.container} {run}'
-        return super().start(shell, body, env, cwd, job_dir, index, command=wrapped)
+        # The wrapper itself runs in the distro: give it a folder that exists there (the job folder).
+        # The step's working directory, which may exist only in the image, is applied by `podman exec -w`.
+        return super().start(shell, body, env, to_linux(str(job_dir)), job_dir, index, command=wrapped)
 
     def kill(self, proc):
         if self.container:  # stop everything the step started inside the container, but keep the
