@@ -125,6 +125,28 @@ class Onboarding(EasyCITest):
         code, doc, _ = self.call('setup', '--repo', repo)
         self.assertEqual((code, doc['data']['files']), (0, []))
 
+    def test_pnpm_and_yarn_need_corepack(self):
+        # Review finding: a backend without corepack was chosen although the install step needs it.
+        stacks = [{'stack': 'node', 'manager': 'pnpm'}]
+        probes = [('wsl:no-corepack', lambda tools: {'node': 'v22', 'npm': '10', 'git': 'git 2'}),
+                  ('wsl:full', lambda tools: {'node': 'v22', 'npm': '10', 'git': 'git 2', 'corepack': '0.29'})]
+        self.assertEqual(onboard.choose_backend(stacks, probes)['backend'], 'wsl:full')
+        self.assertEqual(onboard.choose_backend([{'stack': 'node', 'manager': 'npm'}], probes)['backend'],
+                         'wsl:no-corepack')
+
+    def test_commit_never_takes_a_users_own_file(self):
+        # Review finding: an untracked easyci.yml the user wrote was committed because of its name.
+        from ecsupport import GIT_ENV
+        os.environ['EASYCI_FAKE_PROBES'] = json.dumps(PROBES)
+        os.environ.update(GIT_ENV)
+        repo = self.make_repo(None, {'calc.py': 'x = 1\n', 'requirements.txt': ''}, name='mine')
+        (pathlib.Path(repo) / 'easyci.yml').write_text('backend: native\n# mine, not finished\n')
+        code, doc, _ = self.call('setup', '--repo', repo, '--commit')
+        self.assertEqual(code, 0, doc)
+        committed = self.git(repo, 'show', '--name-only', '--format=', 'HEAD').split()
+        self.assertEqual(committed, ['.github/workflows/ci.yml'])
+        self.assertIn('?? easyci.yml', self.git(repo, 'status', '--porcelain'))
+
     def test_go_directive_is_a_minimum(self):
         # Review finding: `go 1.21` with Go 1.23 installed requested exactly 1.21, which was then rejected.
         go = {'stack': 'go', 'version': '1.21'}

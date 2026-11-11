@@ -14,7 +14,7 @@ import pathlib
 import re
 import shutil
 
-from easyci import snapshot
+from easyci import snapshot, store
 
 STACK_TOOLS = {'node': ['node', 'npm'], 'python': ['python'], 'julia': ['julia'], 'go': ['go'],
                'rust': ['cargo'], 'maven': ['java', 'mvn'], 'gradle': ['java'], 'dotnet': ['dotnet']}
@@ -106,6 +106,8 @@ def stack_tools(stack):
     tools = list(STACK_TOOLS[stack['stack']])
     if stack['stack'] == 'gradle' and not stack.get('wrapper'):
         tools.append('gradle')
+    if stack['stack'] == 'node' and stack.get('manager') in ('pnpm', 'yarn'):
+        tools.append('corepack')  # the generated install step runs `corepack enable`
     return tools
 
 
@@ -307,8 +309,14 @@ def plan(repo, probes=None):
             'files': files}
 
 
+def created_record(repo):
+    """Where setup remembers the files it created for a project (outside the repository)."""
+    return store.project_dir(store.project_slug(repo)) / 'setup-created.json'
+
+
 def write(repo, files):
-    """Write the planned files; never overwrite. Return the paths written."""
+    """Write the planned files; never overwrite. Return the paths written, and remember them so a
+    later `setup --commit` commits these and nothing else."""
     written = []
     for item in files:
         path = pathlib.Path(repo) / item['path']
@@ -317,6 +325,10 @@ def write(repo, files):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(item['text'].encode('utf-8'))
         written.append(item['path'])
+    if written:
+        record = created_record(repo)
+        record.parent.mkdir(parents=True, exist_ok=True)
+        store.write_json(record, sorted(set(store.read_json(record) or []) | set(written)))
     return written
 
 
@@ -324,10 +336,12 @@ SETUP_PATHS = ('.github/workflows/ci.yml', 'easyci.yml')
 
 
 def uncommitted(repo):
-    """Files setup writes that exist but are not tracked yet, e.g. after `setup --write`."""
+    """Files setup itself created that exist but are not tracked yet, e.g. after `setup --write`.
+    A file of the same name the user made is never picked up."""
     import subprocess
     out = []
-    for path in SETUP_PATHS:
+    created = set(store.read_json(created_record(repo)) or [])
+    for path in [p for p in SETUP_PATHS if p in created]:
         if (pathlib.Path(repo) / path).is_file():
             tracked = subprocess.run(['git', 'ls-files', '--error-unmatch', '--', path], cwd=repo,
                                      capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
