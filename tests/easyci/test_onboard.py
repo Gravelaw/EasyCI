@@ -61,9 +61,14 @@ class Onboarding(EasyCITest):
         self.assertIn('corepack enable && pnpm install --frozen-lockfile',
                       onboard.workflow_text(onboard.detect(self.project('p', PROJECTS['pnpm'])), PROBES, True))
         py = onboard.detect(self.project('py', PROJECTS['python']))[0]
-        self.assertEqual((py['version'], py['extras'], py['pytest'], py['requirements']), ('3.11', ['test'], True,
-                                                                                            ['requirements.txt']))
+        self.assertEqual((py['version'], py['requires'], py['extras'], py['pytest'], py['requirements']),
+                         (None, '>=3.11', ['test'], True, ['requirements.txt']))
         text = onboard.workflow_text([py], PROBES, True)
+        # Review finding: requires-python is a constraint. The installed 3.14 meets >=3.11, so it is
+        # requested (an exact "3.11" would be rejected as a mismatch and nothing would run).
+        self.assertIn('python-version: "3.14"', text)
+        self.assertIn('python-version: "3.13"', onboard.workflow_text([{**py, 'requires': '>=3.13,<3.14'}],
+                                                                      {**PROBES, 'python': 'Python 3.12.1'}, True))
         self.assertIn('python3 -m venv .venv', text)
         self.assertIn('pip install -e ".[test]"', text)
         self.assertIn('. .venv/Scripts/activate', onboard.workflow_text([py], PROBES, False))

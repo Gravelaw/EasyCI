@@ -51,6 +51,18 @@ class SealAndVerify(EasyCITest):
         self.assertEqual(doc['data']['mismatches'], [{'path': 'jobs/web/log.txt', 'problem': 'changed'}])
 
 
+class LockRelease(EasyCITest):
+    def test_release_waits_for_a_reader_holding_the_owner_file(self):
+        # Seen in the suite: a run failed with WinError 32 because another process was reading
+        # queue.lock/owner.json while the run released the lock.
+        import threading
+        self.assertTrue(store.try_lock('r1', os.getpid()))
+        handle = open(store.lock_dir() / 'owner.json', 'rb')
+        threading.Timer(0.3, handle.close).start()
+        store.release_lock('r1')
+        self.assertFalse(store.lock_dir().exists())
+
+
 class Reaper(EasyCITest):
     def test_dead_supervisor_is_marked_interrupted_and_releases_the_lock(self):
         dead = subprocess.Popen([sys.executable, '-c', 'pass'])

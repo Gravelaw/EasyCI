@@ -81,6 +81,41 @@ class Watch(EasyCITest):
         code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
         self.assertEqual((doc['data']['started'], doc['data']['skipped']), ([], []))
 
+    def test_pr_paths_compare_from_the_merge_base_and_the_base_is_fetched(self):
+        # Review findings: with a diverged target, path filters compared against the target's tip
+        # (a change made on both branches vanished), and only the head commit was fetched.
+        wf = ('on:\n  pull_request:\n    paths: ["src/**"]\njobs:\n  t:\n    runs-on: ubuntu-latest\n'
+              '    steps:\n      - run: echo src-changed\n')
+        repo = self.make_repo(wf, {'easyci.yml': 'backend: native\n'}, remote=REMOTE)
+        root = self.tmp / 'repo'
+        start = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'checkout', '-qb', 'feature')
+        (root / 'src').mkdir()
+        (root / 'src' / 'a.py').write_text('same\n')
+        self.git(repo, 'add', '-A')
+        self.git(repo, 'commit', '-qm', 'feature change')
+        head = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'checkout', '-q', start)
+        (root / 'src').mkdir(exist_ok=True)
+        (root / 'src' / 'a.py').write_text('same\n')  # the target makes the same change independently
+        (root / 'notes.md').write_text('x\n')
+        self.git(repo, 'add', '-A')
+        self.git(repo, 'commit', '-qm', 'target moved on')
+        target = self.git(repo, 'rev-parse', 'HEAD')
+        self.git(repo, 'checkout', '-q', 'feature')
+        os.environ['FAKE_GH_PULLS'] = json.dumps([pull(7, head, base=target)])
+        from unittest import mock
+        from easyci import watch
+        fetched = []
+        real = watch.ensure_commit
+        with mock.patch.object(watch, 'ensure_commit', lambda r, sha, ref: fetched.append(sha) or real(r, sha, ref)):
+            code, doc, _ = self.call('watch', '--repo', repo, '--once', '--no-report')
+        self.assertEqual(fetched, [head, target])
+        started = doc['data']['started']
+        self.assertEqual([s['pr'] for s in started], [7], doc)
+        code, data = self.wait(started[0]['run_id'])
+        self.assertEqual([j['state'] for j in data['jobs']], ['passed'], data)
+
     def test_watch_needs_a_github_remote(self):
         repo = self.make_repo(QUICK)
         code, doc, _ = self.call('watch', '--repo', repo, '--once')

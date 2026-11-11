@@ -65,6 +65,9 @@ def cycle(repo, profile=None, config=None, all_authors=False, no_report=False, s
         if not ensure_commit(repo, sha, head.get('ref')):
             out.append({'pr': int(number), 'sha': sha, 'skipped': 'head commit could not be fetched'})
             continue
+        if base.get('sha') and not ensure_commit(repo, base['sha'], base.get('ref')):
+            out.append({'pr': int(number), 'sha': sha, 'skipped': 'base commit could not be fetched'})
+            continue
         # The commit pins what runs; the branch name feeds github.head_ref, as on GitHub.
         ns = argparse.Namespace(repo=str(repo), commit=sha, ref=head.get('ref'), base=base.get('sha'), event='pull_request',
                                 profile=profile, job=None, workflow=None, backend=None, config=config, wait=False,

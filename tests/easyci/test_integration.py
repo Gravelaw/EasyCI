@@ -323,3 +323,27 @@ class RealWsl(EasyCITest):
         run_id = self.start_wsl(self.make_repo(text))
         code, data = self.wait(run_id, timeout=180)
         self.assertEqual(code, 0, json.dumps(data))
+
+
+@unittest.skipUnless(ENABLED and DISTRO, 'set EASYCI_INTEGRATION=1 and EASYCI_TEST_DISTRO=<a disposable distro>')
+class RealWslCache(EasyCITest):
+    def setUp(self):
+        super().setUp()
+        os.environ.pop('EASYCI_WSL', None)
+
+    def test_wsl_cache_entries(self):
+        from easyci import cache
+        from easyci.backends import wsl
+        from test_runs import exercise_cache
+        backend = wsl.Wsl(DISTRO)
+        ws = f'/tmp/easyci-cache-test-{os.getpid()}'
+        c = cache.WslCache(backend, f'cachetest-{os.getpid()}')
+        run = lambda script: wsl.wsl_run(DISTRO, script)  # noqa: E731
+        try:
+            run(f'rm -rf {ws} {ws}-new; mkdir -p {ws}')
+            write = lambda rel, text: run(f'mkdir -p "$(dirname {ws}/{rel})"; printf %s {text} > {ws}/{rel}')  # noqa: E731
+            read = lambda rel: run(f'cat {ws}/{rel}')[1]  # noqa: E731
+            exercise_cache(self, c, ws, write, read, link=lambda a, b: run(f'ln {ws}/{a} {ws}/{b}'))
+            self.assertEqual(run(f'cat {ws}-new/linked/b.txt')[1], 'shared')
+        finally:
+            run(f'rm -rf {ws} {ws}-new {c.dir}')

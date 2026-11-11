@@ -61,6 +61,11 @@ class Releases(EasyCITest):
         self.assertEqual(code, 0, doc)
         self.assertEqual(self.call('verify', doc['data']['release'])[0], 0)
 
+    def test_promote_finds_an_artifact_by_its_workflow_name(self):
+        repo, run_id = self.passed_run(BUILD.replace('{name: package, path: dist}', '{name: test results, path: dist}'))
+        code, doc, _ = self.call('promote', run_id, '--artifact', 'test results', '--to', self.tmp / 'rel')
+        self.assertEqual((code, doc['data']['files']), (0, 1), doc)
+
     def test_only_passed_runs_are_promoted(self):
         failing = BUILD.replace('echo "package v1" > dist/app.txt', 'echo x > dist/app.txt; exit 1')
         repo = self.make_repo(failing, {'easyci.yml': 'backend: native\n'})
