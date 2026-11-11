@@ -156,6 +156,9 @@ class NativeCache:
             for i, path in enumerate(paths):
                 source = self.resolve(ws, path)
                 if source.exists() and not source.is_symlink():
+                    # Hard-link tracking per path: a file linked from two cached paths is stored in full
+                    # in each, so restoring one path never depends on another path's prefix.
+                    tar.inodes = {}
                     tar.add(source, arcname=f'p{i}')
                     stored = True
         if not stored:

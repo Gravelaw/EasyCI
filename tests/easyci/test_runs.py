@@ -769,3 +769,32 @@ class CacheLinks(EasyCITest):
             c.restore(other, ['deps'], 'k', [])
         self.assertEqual((other / 'deps' / 'bin' / 'tool').read_text(), 'real')
         self.assertFalse((other / 'deps' / 'bin' / 'tool').is_symlink())
+
+
+class JobStatusOutput(EasyCITest):
+    def test_job_status_output_after_a_failing_last_step(self):
+        # Review finding: an output `${{ job.status }}` said success although the last step failed.
+        workflow = ('on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    outputs:\n'
+                    '      result: ${{ job.status }}\n    steps:\n      - run: exit 1\n'
+                    '  report:\n    needs: build\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n'
+                    '      - run: echo "build said ${{ needs.build.outputs.result }}"\n')
+        code, data = self.wait(self.start(self.make_repo(workflow), '--no-report', '--backend', 'fake')['run_id'])
+        log = (self.run_dir(data['run_id']) / 'jobs/report/log.txt').read_text()
+        self.assertIn('build said failure', log)
+
+
+class CacheCrossLinks(EasyCITest):
+    def test_hard_links_across_cached_paths(self):
+        # Review finding: b/f hard-linked to a/f was stored as a link into a's prefix and dropped.
+        from easyci import cache
+        ws = self.tmp / 'ws'
+        (ws / 'a').mkdir(parents=True)
+        (ws / 'b').mkdir()
+        (ws / 'a' / 'f').write_text('shared')
+        os.link(ws / 'a' / 'f', ws / 'b' / 'f')
+        c = cache.NativeCache('cross')
+        self.assertTrue(c.save(ws, ['a', 'b'], 'k'))
+        new = self.tmp / 'new'
+        new.mkdir()
+        self.assertEqual(c.restore(new, ['a', 'b'], 'k', []), ('k', True))
+        self.assertEqual((new / 'b' / 'f').read_text(), 'shared')
