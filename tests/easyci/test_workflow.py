@@ -87,6 +87,36 @@ class Mapping(unittest.TestCase):
         self.assertEqual(plan(['a.md', 'docs/b.md']), [])
         self.assertEqual(len(plan(['a.md', 'src/x.py'])), 1)
 
+    def test_globstar_slash_matches_zero_folders(self):
+        # Review finding: `**/` must also match no folder at all, as on GitHub.
+        for pattern, path, expected in (('**/*.py', 'main.py', True), ('**/*.py', 'a/b/main.py', True),
+                                        ('src/**/*.py', 'src/main.py', True), ('src/**/*.py', 'src/a/main.py', True),
+                                        ('src/**/*.py', 'srcx/main.py', False), ('*.py', 'a/main.py', False),
+                                        ('src/**', 'src/a/b', True), ('docs/?.md', 'docs/a.md', True),
+                                        ('docs/?.md', 'docs/ab.md', False), ('a.b', 'aXb', False)):
+            self.assertEqual(workflow.glob_match(pattern, path), expected, (pattern, path))
+
+    def test_changed_files_are_read_raw_not_quoted(self):
+        # Review finding: git quotes non-ASCII names in its default output.
+        import os
+        import subprocess
+        import tempfile
+        from easyci import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            git = lambda *a: subprocess.run(['git', '-C', tmp, '-c', 'user.name=t', '-c', 'user.email=t@t', *a],  # noqa: E731
+                                            check=True, capture_output=True)
+            git('init', '-q')
+            git('commit', '-q', '--allow-empty', '-m', 'base')
+            os.makedirs(os.path.join(tmp, 'src'))
+            for name in ('café.py', 'über ü.py', ' lead.py'):  # Windows forbids tabs in names
+                with open(os.path.join(tmp, 'src', name), 'w') as f:
+                    f.write('x')
+            git('add', '-A')
+            git('commit', '-q', '-m', 'files')
+            changed = snapshot.changed_files(tmp, 'HEAD~1', 'HEAD')
+        self.assertEqual(sorted(changed), sorted(['src/café.py', 'src/über ü.py', 'src/ lead.py']))
+        self.assertTrue(all(workflow.glob_match('src/**', name) for name in changed))
+
     def test_busy_settings_are_validated(self):
         workflow.load_config('busy_paths: [artifacts/*/summary.json]\nbusy_stale_minutes: 5\nbusy_wait_minutes: 30\n')
         for text in ('busy_paths: x', 'busy_paths: [""]', 'busy_stale_minutes: 0', 'busy_wait_minutes: -1'):

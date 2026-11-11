@@ -106,9 +106,31 @@ def load_config(text, source='easyci.yml'):
     return cfg
 
 
+def glob_regex(pattern):
+    """GitHub filter globs: `*` stays within one folder, `**` crosses folders, and `**/` may also
+    match no folder at all, so `**/*.py` matches `main.py` and `src/**/*.py` matches `src/main.py`."""
+    out, i, p = [], 0, str(pattern)
+    while i < len(p):
+        if p.startswith('**/', i):
+            out.append('(?:.*/)?')
+            i += 3
+        elif p.startswith('**', i):
+            out.append('.*')
+            i += 2
+        elif p[i] == '*':
+            out.append('[^/]*')
+            i += 1
+        elif p[i] == '?':
+            out.append('[^/]')
+            i += 1
+        else:
+            out.append(re.escape(p[i]))
+            i += 1
+    return ''.join(out)
+
+
 def glob_match(pattern, value):
-    regex = re.escape(str(pattern)).replace(r'\*\*', '.*').replace(r'\*', '[^/]*').replace(r'\?', '.')
-    return re.fullmatch(regex, value) is not None
+    return re.fullmatch(glob_regex(pattern), value) is not None
 
 
 def filter_match(patterns, value):

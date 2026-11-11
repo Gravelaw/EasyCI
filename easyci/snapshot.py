@@ -80,8 +80,9 @@ def merge_base(repo, commit, branch):
 
 def changed_files(repo, base, commit):
     """Paths changed between base and commit (for workflow `paths:` filters), or None."""
-    out = git(['diff', '--name-only', '--no-renames', base, commit], repo, check=False)
-    return None if out is None else [line for line in out.splitlines() if line]
+    # -z gives raw NUL-separated names; the default output quotes non-ASCII names in C style.
+    out = git(['diff', '--name-only', '--no-renames', '-z', base, commit], repo, check=False, binary=True)
+    return None if out is None else [name for name in out.decode('utf-8', errors='replace').split('\0') if name]
 
 
 def show(repo, commit, path):
