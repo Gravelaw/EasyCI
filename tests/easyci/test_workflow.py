@@ -275,6 +275,13 @@ jobs:
         self.assertEqual([c for c, _ in workflow.expand_matrix(job, {})],
                          [{'os': 'ubuntu', 'color': 'green'}, {'os': 'windows', 'color': 'green'}])
 
+    def test_object_values_match_by_content(self):
+        # Review finding: object-valued axes compared by identity, so exclude/include never matched.
+        job = {'strategy': {'matrix': {'node': [{'version': 20}, {'version': 22}],
+                                       'exclude': [{'node': {'version': 20}}],
+                                       'include': [{'node': {'version': 22}, 'lts': True}]}}}
+        self.assertEqual([c for c, _ in workflow.expand_matrix(job, {})], [{'node': {'version': 22}, 'lts': True}])
+
     def test_matrix_ids_never_collide_with_other_jobs(self):
         # Review finding: matrix `t` with v: [1, 2] next to an ordinary job `t-1`.
         text = ('on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: {v: [1, 2]}\n'
