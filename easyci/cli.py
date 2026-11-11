@@ -300,7 +300,8 @@ def cmd_run(args):
         'base': info['base'], 'tree': None, 'event': info['event'], 'profile': args.profile, 'state': 'queued',
         'stalled': False, 'launch': None, 'created_at': store.iso(), 'started_at': None, 'finished_at': None,
         'jobs': jobs, 'github': {'enabled': info['report'], 'repo': info['repository'], 'contexts': {},
-                                 'reported': False}})
+                                 'reported': False,
+                                 'suffix': github.machine_suffix(info['cfg'], global_config())}})
     store.add_ticket(run_id)
     try:
         path, pid = launch.start(rd, run_id)

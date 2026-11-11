@@ -142,6 +142,11 @@ Optional. Lives at the repository root (or is passed with `--config`).
 version: 1
 backend: wsl:my-distro        # where ubuntu-* jobs run (native, wsl, wsl:<distro>)
 report: true                  # post GitHub commit statuses
+pr_comment: false             # keep one EasyCI comment on the pull request
+machine_label: false          # contexts easyci/<job>@<machine>, for teams with several PCs
+container_backend: podman:easyci-containers  # where jobs with container:/services: run
+artifact_threshold_mb: 100    # bigger artifacts go to the artifact store
+data: [data/*.csv, '*.dvc']  # hashed into the reproducibility record
 retention: 20                 # runs kept per project by `easyci clean`
 gpu: optional                 # or required: nvidia-smi must exist on the backend
 busy_paths: [artifacts/local-ci/*/summary.json]  # wait while another runner is busy on this repo

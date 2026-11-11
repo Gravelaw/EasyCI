@@ -14,7 +14,8 @@ class ConfigError(Exception):
     pass
 
 
-TOP_KEYS = {'version', 'backend', 'container_backend', 'report', 'pr_comment', 'profiles', 'jobs', 'retention', 'gpu',
+TOP_KEYS = {'version', 'backend', 'container_backend', 'report', 'pr_comment', 'machine_label', 'profiles', 'jobs',
+            'retention', 'gpu',
             'busy_paths',
             'artifact_threshold_mb', 'data',
             'busy_stale_minutes',
@@ -66,7 +67,7 @@ def load_config(text, source='easyci.yml'):
         raise ConfigError(f'{source}: only version 1 is supported')
     if 'backend' in cfg:
         backend_id(cfg['backend'], source)
-    for key in ('report', 'pr_comment'):
+    for key in ('report', 'pr_comment', 'machine_label'):
         if not isinstance(cfg.get(key, key == 'report'), bool):
             raise ConfigError(f'{source}: {key} must be true or false')
     if cfg.get('gpu', 'optional') not in ('required', 'optional'):

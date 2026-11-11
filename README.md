@@ -12,6 +12,9 @@ plain sentences.
 - Every command in plain words: [docs/usage.md](docs/usage.md).
 - First time? [Getting started](docs/guide/getting-started.md): ten minutes, no DevOps knowledge needed.
 - New to CI/CD? [The plain-language guide](docs/guide/ci-explained.md).
+- Several PCs or a team? [Team use](docs/guide/team.md).
+- Bringing EasyCI to another repository? [Adoption checklist](docs/guide/adopt.md).
+- What is done and what is not: [status and known limitations](docs/status.md).
 
 ## Install
 

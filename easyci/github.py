@@ -144,9 +144,21 @@ def duration(seconds):
     return f'{seconds // 60}m {seconds % 60:02d}s'
 
 
+def machine_suffix(cfg, gcfg):
+    """'@<machine>' when machine labels are on (easyci.yml or config.yml `machine_label: true`), else ''.
+
+    Phase 4: with labels, two PCs report on the same pull request without overwriting each other
+    (`easyci/web@pc-a` next to `easyci/web@pc-b`)."""
+    if not (cfg.get('machine_label') or gcfg.get('machine_label')):
+        return ''
+    name = str(gcfg.get('machine_name') or socket.gethostname())
+    return '@' + (re.sub(r'[^A-Za-z0-9._-]+', '-', name).strip('-')[:40] or 'machine')
+
+
 def desired(run):
     """[(context, state, description)] for the run as it is now: job contexts first, overall last."""
     host, rid = socket.gethostname(), run.get('run_id')
+    suffix = (run.get('github') or {}).get('suffix', '')
     out = []
     for job in run.get('jobs', []):
         if not job.get('reported'):
@@ -165,7 +177,7 @@ def desired(run):
             text = f'failed at step {step.get("index", "?")}/{job.get("steps_total", "?")} {step.get("name", "")} · run {rid}'
         else:
             text = f'{job.get("state")}: {job.get("reason") or ""} · run {rid}'
-        out.append((f'easyci/{job["name"]}', state, text))
+        out.append((f'easyci/{job["name"]}{suffix}', state, text))
     state = run.get('state')
     overall = {'passed': 'success', 'failed': 'failure'}.get(state, 'pending' if state in store.LIVE else 'error')
     if state in store.LIVE:
@@ -174,7 +186,7 @@ def desired(run):
         text = f'passed in {duration(store.elapsed(run))} · run {rid} · {host}'
     else:
         text = f'{state}{": " + run["reason"] if run.get("reason") else ""} · run {rid} · {host}'
-    out.append(('easyci', overall, text))
+    out.append((f'easyci{suffix}', overall, text))
     return [(c, s, d if len(d) <= 140 else d[:137] + '...') for c, s, d in out]
 
 
