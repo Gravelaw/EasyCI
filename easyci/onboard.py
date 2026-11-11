@@ -111,8 +111,36 @@ def stack_tools(stack):
     return tools
 
 
+def unmet_versions(stacks, have):
+    """['python 3.12', ...]: versions the project pins or requires that the backend's tools do not
+    meet. A pin (.python-version, .nvmrc, Manifest julia_version) must match; requires-python,
+    engines.node and the go directive are ranges or minimums."""
+    from easyci.backends import version_matches
+    out = []
+    for s in stacks:
+        tool = {'python': 'python', 'node': 'node', 'go': 'go', 'julia': 'julia'}.get(s['stack'])
+        actual = have.get(tool) if tool else None
+        if not actual:
+            continue
+        pin, requires = s.get('version'), s.get('requires')
+        if s['stack'] == 'go' and pin:
+            ok = satisfies(major(actual, 2), f'>={pin}')
+        elif pin:
+            ok = version_matches(pin, actual)
+        elif requires and s['stack'] == 'python':
+            ok = satisfies(major(actual, 2), requires)
+        elif requires and s['stack'] == 'node':
+            ok = node_satisfies(actual, requires)
+        else:
+            ok = True
+        if not ok:
+            out.append(f'{tool} {pin or requires}')
+    return out
+
+
 def choose_backend(stacks, probes=None):
-    """{'backend', 'have': {tool: version}, 'missing': [tool]} for the best candidate."""
+    """{'backend', 'have': {tool: version}, 'missing': [tool], 'unmet': [...]} for the best candidate:
+    the one with every tool at a version the project accepts, else the one closest to that."""
     tools = sorted({t for s in stacks for t in stack_tools(s)} | {'git'})
     best = None
     for backend_id, probe in (probes if probes is not None else candidates()):
@@ -121,11 +149,12 @@ def choose_backend(stacks, probes=None):
         except Exception:  # noqa: BLE001 - an unreachable distro is just not a candidate
             continue
         missing = [t for t in tools if t not in have]
-        if best is None or len(missing) < len(best['missing']):
-            best = {'backend': backend_id, 'have': have, 'missing': missing}
-        if not missing:
+        unmet = unmet_versions(stacks, have)
+        if best is None or len(missing) + len(unmet) < len(best['missing']) + len(best['unmet']):
+            best = {'backend': backend_id, 'have': have, 'missing': missing, 'unmet': unmet}
+        if not missing and not unmet:
             break
-    return best or {'backend': 'native', 'have': {}, 'missing': tools}
+    return best or {'backend': 'native', 'have': {}, 'missing': tools, 'unmet': []}
 
 
 # ---- templates --------------------------------------------------------------------------------
@@ -413,6 +442,9 @@ def sentences(result):
         if choice['missing']:
             out.append(f'Missing there: {", ".join(choice["missing"])}. Fix: install them in {where}, then run '
                        '`easyci setup` again.')
+        if choice.get('unmet'):
+            out.append(f'Wrong version there for: {", ".join(choice["unmet"])}. Fix: install that version in {where}, '
+                       'then run `easyci setup` again.')
     for item in result['files']:
         out.append(f'{"Wrote" if item.get("written") else "Would write"} {item["path"]}.')
     if not result['files'] and not result['workflows']:

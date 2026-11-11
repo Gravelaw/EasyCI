@@ -125,6 +125,17 @@ class Onboarding(EasyCITest):
         code, doc, _ = self.call('setup', '--repo', repo)
         self.assertEqual((code, doc['data']['files']), (0, []))
 
+    def test_backend_choice_respects_versions(self):
+        # Review finding: a distro with Python 3.10 was chosen for a project pinned to 3.12.
+        probes = [('wsl:old', lambda tools: {'python': 'Python 3.10.12', 'git': 'git 2'}),
+                  ('wsl:new', lambda tools: {'python': 'Python 3.12.3', 'git': 'git 2'})]
+        pinned = onboard.choose_backend([{'stack': 'python', 'version': '3.12'}], probes)
+        self.assertEqual((pinned['backend'], pinned['unmet']), ('wsl:new', []))
+        ranged = onboard.choose_backend([{'stack': 'python', 'version': None, 'requires': '>=3.11'}], probes)
+        self.assertEqual(ranged['backend'], 'wsl:new')
+        only_old = onboard.choose_backend([{'stack': 'python', 'version': '3.12'}], probes[:1])
+        self.assertEqual(only_old['unmet'], ['python 3.12'])
+
     def test_pnpm_and_yarn_need_corepack(self):
         # Review finding: a backend without corepack was chosen although the install step needs it.
         stacks = [{'stack': 'node', 'manager': 'pnpm'}]
