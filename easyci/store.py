@@ -419,6 +419,11 @@ def verify(rd):
         if info is None:
             continue  # not a pointer EasyCI wrote; it is checked above like any other sealed file
         location = pathlib.Path(info['location'])
+        if location.is_dir():  # files added to the offloaded folder after sealing are reported too
+            for path in sorted(location.rglob('*')):
+                name = path.relative_to(location).as_posix()
+                if path.is_file() and name not in info['files']:
+                    mismatches.append({'path': f'{rel}:{name}', 'problem': 'extra'})
         for name, value in sorted(info['files'].items()):
             target = location / name
             if not target.is_file():
@@ -448,29 +453,40 @@ def artifact_store(project):
     return home() / 'artifacts' / project
 
 
-def data_hashes(repo, patterns):
-    """{path: {sha256 | dvc_md5, size}} for the data a run used (spec section 13).
+def data_hashes(repo, patterns, commit=None):
+    """{path: {sha256 | dvc_md5, size, source}} for the data a run used (spec section 13).
 
-    Paths are relative to the repository folder (data usually lives outside git). A `.dvc` file
-    contributes the md5 DVC recorded for its output instead of hashing the data again."""
+    Paths are relative to the repository folder. A file tracked in git is hashed as it is at the
+    tested commit (what the job's checkout holds), not as it is in the working copy; untracked data
+    (the usual case, kept outside git) is hashed from the folder. A matched folder contributes every
+    file in it. A `.dvc` file contributes the md5 DVC recorded for its output."""
+    from easyci import snapshot
+    from easyci.backends import _glob_regex
     root, out = pathlib.Path(repo), {}
+    tracked = set(snapshot.list_tree(repo, commit)) if commit else set()
     for pattern in patterns:
-        matched = sorted(root.glob(str(pattern).replace('\\', '/')))
-        # A matched folder (`data`, or what `data/**` yields on Python 3.12) contributes every file in it.
-        files = sorted({f for m in matched for f in ([m] if m.is_file() else m.rglob('*') if m.is_dir() else [])})
-        for path in files:
-            if not path.is_file() or path.is_symlink():
-                continue
-            rel = path.relative_to(root).as_posix()
-            if path.suffix == '.dvc':
+        pattern = str(pattern).replace('\\', '/')
+        matched = sorted(root.glob(pattern))
+        rels = {f.relative_to(root).as_posix() for m in matched
+                for f in ([m] if m.is_file() else m.rglob('*') if m.is_dir() else [])
+                if f.is_file() and not f.is_symlink()}
+        regex = _glob_regex(pattern)
+        rels |= {t for t in tracked if regex.match(t)}
+        for rel in sorted(rels):
+            if rel in tracked:
+                data, source = snapshot.show(repo, commit, rel) or b'', 'commit'
+            else:
+                data, source = (root / rel).read_bytes(), 'working tree'
+            if rel.endswith('.dvc'):
                 import yaml
                 try:
-                    outs = (yaml.safe_load(path.read_text(encoding='utf-8')) or {}).get('outs') or []
-                except (OSError, yaml.YAMLError):
+                    outs = (yaml.safe_load(data.decode('utf-8')) or {}).get('outs') or []
+                except (UnicodeDecodeError, yaml.YAMLError, AttributeError):
                     outs = []
-                out[rel] = {'dvc_md5': [o.get('md5') for o in outs if isinstance(o, dict)], 'size': path.stat().st_size}
+                out[rel] = {'dvc_md5': [o.get('md5') for o in outs if isinstance(o, dict)], 'size': len(data),
+                            'source': source}
             else:
-                out[rel] = {'sha256': digest(path), 'size': path.stat().st_size}
+                out[rel] = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data), 'source': source}
     return out
 
 

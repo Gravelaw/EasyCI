@@ -254,7 +254,7 @@ class Supervisor:
             self.run['tree'] = snapshot.make_bundle(repo, commit, base, self.rd / 'source.bundle')
             self.run['bundle_sha256'] = store.digest(self.rd / 'source.bundle')
             if self.plan.get('data'):
-                self.run['data'] = store.data_hashes(repo, self.plan['data'])
+                self.run['data'] = store.data_hashes(repo, self.plan['data'], self.run['commit'])
         except (snapshot.GitError, OSError) as error:
             self.fail_all('failed', f'snapshot_failed:{error}')
             raise Cancelled from None

@@ -143,3 +143,29 @@ class DataFolders(EasyCITest):
         repo = self.make_repo(None, {'data/train.csv': 'a\n', 'data/sub/test.csv': 'b\n'}, name='dataset')
         for patterns in (['data'], ['data/**']):
             self.assertEqual(sorted(store.data_hashes(repo, patterns)), ['data/sub/test.csv', 'data/train.csv'], patterns)
+
+    def test_tracked_data_is_hashed_as_tested_untracked_from_the_folder(self):
+        # Review finding: tracked data was hashed from the working copy even when it differed from the
+        # commit the job checked out.
+        repo = self.make_repo(None, {'data/train.csv': 'tested\n'}, name='dataset-commit')
+        commit = self.git(repo, 'rev-parse', 'HEAD')
+        (pathlib.Path(repo) / 'data' / 'train.csv').write_text('edited, not committed\n')
+        (pathlib.Path(repo) / 'data' / 'big.parquet').write_text('untracked\n')
+        hashes = store.data_hashes(repo, ['data'], commit)
+        self.assertEqual(hashes['data/train.csv']['sha256'], store.digest_bytes(b'tested\n'))
+        self.assertEqual(hashes['data/train.csv']['source'], 'commit')
+        self.assertEqual(hashes['data/big.parquet']['source'], 'working tree')
+
+
+class OffloadedExtras(EasyCITest):
+    passed_run = Releases.passed_run
+
+    def test_files_added_to_an_offloaded_artifact_are_reported(self):
+        # Review finding: verify only checked the files a pointer listed.
+        workflow = BUILD.replace('echo "package v1" > dist/app.txt', 'head -c 1500000 /dev/zero > dist/big.bin')
+        repo, run_id = self.passed_run(workflow, {'easyci.yml': 'backend: native\nartifact_threshold_mb: 1\n'})
+        pointer = json.loads((self.run_dir(run_id) / 'jobs/build/artifacts/package.pointer.json').read_text())
+        (pathlib.Path(pointer['location']) / 'added.txt').write_text('not tested')
+        code, doc, _ = self.call('verify', run_id)
+        self.assertEqual((code, doc['error']['code']), (1, 'TAMPERED'))
+        self.assertIn('package.pointer.json:added.txt', doc['error']['message'])
