@@ -101,9 +101,17 @@ def candidates():
     return out
 
 
+def stack_tools(stack):
+    """Tools the generated steps call. Without a wrapper script, Gradle itself must be installed."""
+    tools = list(STACK_TOOLS[stack['stack']])
+    if stack['stack'] == 'gradle' and not stack.get('wrapper'):
+        tools.append('gradle')
+    return tools
+
+
 def choose_backend(stacks, probes=None):
     """{'backend', 'have': {tool: version}, 'missing': [tool]} for the best candidate."""
-    tools = sorted({t for s in stacks for t in STACK_TOOLS[s['stack']]} | {'git'})
+    tools = sorted({t for s in stacks for t in stack_tools(s)} | {'git'})
     best = None
     for backend_id, probe in (probes if probes is not None else candidates()):
         try:

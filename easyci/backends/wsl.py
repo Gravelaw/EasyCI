@@ -99,7 +99,7 @@ class Wsl:
             exe = PROBE_TOOLS.get(tool, tool)
             flag = '-version' if tool == 'java' else 'version' if tool == 'go' else '-L' if tool == 'nvidia-smi' else '--version'
             lines.append(f'printf "%s=" {shlex.quote(tool)}; if command -v {shlex.quote(exe)} >/dev/null; then '
-                         f'{shlex.quote(exe)} {flag} 2>&1 | head -n 1; else echo; fi')
+                         f'{shlex.quote(exe)} {flag} 2>&1 | grep -m 1 .; else echo; fi')  # first non-empty line (gradle starts blank)
         if 'julia' in tools:
             lines.append('printf "julia_depot=%s\\n" "${JULIA_DEPOT_PATH:-$HOME/.julia}"')
         code, text = wsl_run(self.distro, '\n'.join(lines), timeout=120)

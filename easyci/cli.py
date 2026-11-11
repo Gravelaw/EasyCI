@@ -586,7 +586,7 @@ def cmd_watch(args):
             if not items:
                 say(args, 'No new pull request commits.')
             return None
-        return {'started': [i for i in items if i.get('run_id')], 'skipped': [i for i in items if i.get('skipped')]}
+        return {'started': [i for i in items if i.get('run_id') and not i.get('skipped')], 'skipped': [i for i in items if i.get('skipped')]}
     if args.json:
         raise Fail(2, 'USAGE', 'watch keeps running; use --once with --json.', 'Add --once.')
     say(args, f'Watching pull requests of {repo} every {max(args.interval, 1):g} minutes. Press Ctrl+C to stop.')

@@ -117,6 +117,22 @@ class Onboarding(EasyCITest):
         code, doc, _ = self.call('setup', '--repo', repo)
         self.assertEqual((code, doc['data']['files']), (0, []))
 
+    def test_gradle_without_a_wrapper_needs_gradle(self):
+        # Review finding: only java and git were probed, so a distro without gradle could be chosen.
+        stacks = [{'stack': 'gradle', 'wrapper': False}]
+        probes = [('wsl:java-only', lambda tools: {'java': 'openjdk 21', 'git': 'git 2'}),
+                  ('wsl:with-gradle', lambda tools: {'java': 'openjdk 21', 'git': 'git 2', 'gradle': 'Gradle 8.10'})]
+        self.assertEqual(onboard.choose_backend(stacks, probes)['backend'], 'wsl:with-gradle')
+        self.assertEqual(onboard.choose_backend([{'stack': 'gradle', 'wrapper': True}], probes)['backend'],
+                         'wsl:java-only')
+        # `gradle --version` starts with a blank line; the probe reads the first non-empty one.
+        from easyci.backends import native
+        bindir = self.tmp / 'fakebin'
+        bindir.mkdir()
+        (bindir / 'gradle.cmd').write_text('@echo off\r\necho.\r\necho Gradle 8.10\r\n')
+        os.environ['PATH'] = f'{bindir}{os.pathsep}{os.environ["PATH"]}'
+        self.assertEqual(native.Native().probe(['gradle'])['gradle'], 'Gradle 8.10')
+
     def test_commit_after_write_and_project_registered(self):
         # Review findings: `setup --commit` after `setup --write` committed nothing, and setup did not
         # register the project, so the dashboard had nothing to run.
