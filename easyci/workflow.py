@@ -118,24 +118,34 @@ def load_config(text, source='easyci.yml'):
 
 
 def glob_regex(pattern):
-    """GitHub filter globs: `*` stays within one folder, `**` crosses folders, and `**/` may also
-    match no folder at all, so `**/*.py` matches `main.py` and `src/**/*.py` matches `src/main.py`."""
+    """GitHub's filter pattern syntax (workflow-syntax "Filter pattern cheat sheet"): `*` stays within
+    one folder, `**` crosses folders and `**/` may match no folder at all (so `**/*.py` matches
+    `main.py`), `?` makes the preceding character optional, `+` repeats it, `[...]` is a character
+    class, and anything else is literal."""
     out, i, p = [], 0, str(pattern)
     while i < len(p):
+        c = p[i]
         if p.startswith('**/', i):
             out.append('(?:.*/)?')
             i += 3
         elif p.startswith('**', i):
             out.append('.*')
             i += 2
-        elif p[i] == '*':
+        elif c == '*':
             out.append('[^/]*')
             i += 1
-        elif p[i] == '?':
-            out.append('[^/]')
+        elif c in '?+' and out and out[-1][-1:] not in ('?', '+', '*'):
+            out[-1] = f'(?:{out[-1]}){c}'  # zero or one / one or more of the preceding character
             i += 1
+        elif c == '[' and ']' in p[i + 2:]:
+            end = p.index(']', i + 2)
+            body = p[i + 1:end]
+            negate = body.startswith('!')
+            body = re.escape(body[1:] if negate else body).replace(r'\-', '-')  # keep ranges like a-z
+            out.append('[' + ('^' if negate else '') + body + ']')
+            i = end + 1
         else:
-            out.append(re.escape(p[i]))
+            out.append(re.escape(c))
             i += 1
     return ''.join(out)
 
