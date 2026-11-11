@@ -67,6 +67,14 @@ def restore_symlink(linkname, dest, root):
     dest.parent.mkdir(parents=True, exist_ok=True)
     linkname = linkname.replace('/', os.sep)  # tar stores `/`; a Windows link with `/` does not resolve
     pointed = (dest.parent / linkname).resolve()
+    if dest.is_symlink():
+        if os.readlink(dest) == linkname:
+            return  # restoring over the same link (a persistent cache folder, a repeated restore)
+        dest.unlink()
+    elif dest.is_dir():
+        shutil.rmtree(dest)
+    elif dest.exists():
+        dest.unlink()
     try:
         os.symlink(linkname, dest, target_is_directory=pointed.is_dir())
         return

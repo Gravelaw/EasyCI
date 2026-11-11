@@ -677,6 +677,10 @@ class CacheLinks(EasyCITest):
         new.mkdir()
         self.assertEqual(c.restore(new, ['deps'], 'k', []), ('k', True))
         self.assertEqual((new / 'deps' / 'bin' / 'tool').read_text(), 'real')
+        # Review finding: restoring over the original folder (the link already there) must not fail.
+        self.assertEqual(c.restore(ws, ['deps'], 'k', []), ('k', True))
+        self.assertEqual(c.restore(new, ['deps'], 'k', []), ('k', True))
+        self.assertTrue((new / 'deps' / 'bin' / 'tool').is_symlink())
         # Without permission to create links, a link inside the folder becomes a copy.
         from unittest import mock
         other = self.tmp / 'other'
