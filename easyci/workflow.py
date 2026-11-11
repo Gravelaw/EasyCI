@@ -540,7 +540,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
         reasons.append(str(error))
         backend = backend or 'native'
     try:
-        out['container'], out['gh_services'] = plan_containers(job, {'github': gh, 'matrix': matrix or {}})
+        out['container'], out['gh_services'] = plan_containers(job, {'github': gh, 'matrix': matrix or {},
+                                                                     'strategy': strategy or {}})
     except Unsupported as error:
         reasons.append(str(error))
         out['container'], out['gh_services'] = None, {}
@@ -553,6 +554,10 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
     out['backend'], out['backend_reason'] = backend, why
     if out['services'] and not str(backend).startswith(('wsl', 'podman')):
         reasons.append(f'unsupported_services:{",".join(out["services"])} needs a wsl backend')
+    if out['services'] and out['container']:
+        # easyci.yml services run in the distro on 127.0.0.1, which a job container cannot reach.
+        reasons.append(f'unsupported_services:{",".join(out["services"])} from easyci.yml cannot be reached from a '
+                       'job container; declare the service under the workflow job services: instead')
     if out['skip']:
         notes.append('skipped by easyci.yml')
         return out

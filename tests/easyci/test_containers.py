@@ -64,6 +64,24 @@ class ContainerPlanning(unittest.TestCase):
         ok = text.replace('${{ needs.config.outputs.database }}', 'db-${{ github.sha }}')
         self.assertEqual(plan(ok, {'container_backend': 'podman:boxes'})['predicted'], 'run')
 
+    def test_strategy_values_reach_container_settings(self):
+        # Review finding: ${{ strategy.job-index }} in container.env became an empty string.
+        text = ('on: push' + chr(10) + 'jobs:' + chr(10) + '  t:' + chr(10) + '    runs-on: ubuntu-latest' + chr(10) +
+                '    strategy: {matrix: {n: [a, b]}}' + chr(10) +
+                '    container: {image: alpine, env: {SHARD: "${{ strategy.job-index }}"}}' + chr(10) +
+                '    steps: [{run: x}]' + chr(10))
+        jobs = workflow.build_plan([('.github/workflows/ci.yml', text.encode())], {'container_backend': 'podman:boxes'},
+                                   INP)['jobs']
+        self.assertEqual([j['container']['env']['SHARD'] for j in jobs], ['0', '1'])
+
+    def test_easyci_services_are_refused_beside_a_job_container(self):
+        # Review finding: the distro's PostgreSQL on 127.0.0.1 is not reachable from a job container.
+        text = ('on: push' + chr(10) + 'jobs:' + chr(10) + '  t:' + chr(10) + '    runs-on: ubuntu-latest' + chr(10) +
+                '    container: alpine' + chr(10) + '    steps: [{run: x}]' + chr(10))
+        job = plan(text, {'container_backend': 'podman:boxes', 'jobs': {'t': {'services': {'postgres': {}}}}})
+        self.assertEqual(job['predicted'], 'unsupported')
+        self.assertIn('cannot be reached from a job container', job['predicted_reason'])
+
     def test_option_and_port_parsing(self):
         self.assertEqual(parse_options('--health-cmd "pg_isready -U x" --health-interval=5s'),
                          ['--health-cmd', 'pg_isready -U x', '--health-interval', '5s'])
