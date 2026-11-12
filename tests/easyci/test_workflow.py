@@ -47,8 +47,28 @@ class JuliaFlowImport(unittest.TestCase):
         plan = workflow.build_plan(juliaflow(), cfg, {**INP, 'event': 'push', 'ref_name': 'main'})
         self.assertEqual(jobs(plan)['debian-release-gate']['predicted'], 'skipped')
 
-    def test_with_example_easyci_yml_jobs_are_selected_and_delegated(self):
+    def test_juliaflow_default_runs_every_job_natively(self):
+        # examples/juliaflow/easyci.yml is JuliaFlow's default: the workflow's own steps, no delegation.
         cfg = workflow.load_config((ROOT / 'examples/juliaflow/easyci.yml').read_text(encoding='utf-8'))
+        for profile, expected in (('pr', ['web', 'julia', 'debian-release-gate']), ('pr-cold', ['web', 'julia', 'debian-release-gate']),
+                                  ('push', ['web', 'julia']), ('push-cold', ['web', 'julia'])):
+            event = cfg['profiles'][profile]['event']
+            plan = workflow.build_plan(juliaflow(), cfg, {**INP, 'profile': profile, 'event': event,
+                                                          'ref_name': 'main' if event == 'push' else INP['ref_name']})
+            j = jobs(plan)
+            self.assertEqual([n for n in expected if j[n]['predicted'] == 'run'], expected, (profile, plan))
+            for name in expected:
+                self.assertTrue(j[name]['backend'].startswith('wsl'))
+                self.assertNotIn('wsl.mjs', ' '.join(str(s.get('run', '')) for s in j[name]['steps']))
+            self.assertEqual(j['julia']['steps'][0]['name'], 'easyci.yml setup')  # memory and cache setup
+        rc = workflow.build_plan(juliaflow(), cfg, {**INP, 'profile': 'release-candidate', 'event': 'workflow_dispatch',
+                                                    'workflow': 'release-candidate.yml'})
+        gate = jobs(rc)['debian-release-gate']
+        self.assertEqual((gate['predicted'], gate['steps'][0]['name']), ('run', 'easyci.yml setup'), gate.get('predicted_reason'))
+        self.assertTrue(gate['cleanup'])
+
+    def test_legacy_delegated_config_still_plans(self):
+        cfg = workflow.load_config((ROOT / 'legacy/juliaflow/easyci.delegated.yml').read_text(encoding='utf-8'))
         plan = workflow.build_plan(juliaflow(), cfg, {**INP, 'profile': 'pr'})
         j = jobs(plan)
         self.assertEqual(j['execution-policy']['predicted'], 'skipped')

@@ -16,12 +16,14 @@ decisions to make along the way.
 ## Once per project
 
 1. **Look at the project's CI first.** Read `.github/workflows/*.yml` and any runner scripts the
-   project already has. If the project runs its tests through its own script (like JuliaFlow's
-   `scripts/ci/wsl.mjs`), decide between:
-   - **delegating**: `command:` in `easyci.yml` calls that script. Same results as today, least work.
-   - **native**: EasyCI runs the workflow's own steps. Use `setup:`/`cleanup:` for whatever the
-     project's runner prepares (memory settings, swap, a wrapper on `$GITHUB_PATH`) and `env:` for the
-     variables it sets.
+   project already has. If the project runs its tests through its own script, decide between:
+   - **native** (recommended): EasyCI runs the workflow's own steps. Use `setup:`/`cleanup:` for
+     whatever the project's runner prepares (memory settings, swap, a wrapper on `$GITHUB_PATH`) and
+     `env:` for the variables it sets. JuliaFlow went this way, and its own runner is being retired
+     (`examples/juliaflow/easyci.yml`).
+   - **delegating**: `command:` in `easyci.yml` calls that script. Same results as today and least
+     work at first, but the project keeps two runners in step
+     (`legacy/juliaflow/easyci.delegated.yml` is the old JuliaFlow example).
 2. **Run `python -m easyci setup --repo <folder>`.** It detects Node, Python, Julia, Go, Rust,
    Java and .NET, picks a backend that has the tools, and shows what it would write. Nothing is written
    until you add `--write` (or `--commit`), and it never overwrites a file.

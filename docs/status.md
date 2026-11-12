@@ -47,7 +47,7 @@ JuliaFlow PRs #65, #64 and #63 ran back to back without anyone watching, and eac
 | 1 | PostgreSQL service and job `env` on WSL | Done (real-WSL test passes) |
 | 1 | Jenkins scaffold moved to `legacy/jenkins/` | Done |
 | 1 | `setup:` / `cleanup:` hooks (added at close-out) | Done |
-| 1 | Retire JuliaFlow's `workflows.json` parity check | Not done: a JuliaFlow change, outside this repository |
+| 1 | Retire JuliaFlow's `workflows.json` parity check | In progress via Gravelaw/LowcodeMLtoolkit.jl#67: EasyCI's native config is now JuliaFlow's default, and JuliaFlow removes its own runner there |
 | 1 | **Exit: native `web`/`julia` match delegated on 5 commits** | Met: same verdicts on 5484bf6, ed7ec11, 846a025, 019f15c and 3f0da7d (details below) |
 | 2 | `easyci setup` for Node, Python, Julia, Go, Rust, Java, .NET | Done |
 | 2 | Desktop launchers, localhost dashboard | Done |
@@ -90,8 +90,9 @@ JuliaFlow PRs #65, #64 and #63 ran back to back without anyone watching, and eac
 ## Exit checks in detail
 
 **Phase 1, native vs delegated.** JuliaFlow's `web` and `julia` jobs ran from their own workflow
-steps (`examples/juliaflow/easyci.native.yml`, profile `pr-native`) and through JuliaFlow's runner
-(`examples/juliaflow/easyci.yml`). All of these were cold-cache runs with no GitHub reporting.
+steps (then `examples/juliaflow/easyci.native.yml`, profile `pr-native`; now the default
+`examples/juliaflow/easyci.yml`, profile `pr`) and through JuliaFlow's runner (now
+`legacy/juliaflow/easyci.delegated.yml`). All of these were cold-cache runs with no GitHub reporting.
 
 | Commit | `web` native / delegated | `julia` native / delegated |
 |---|---|---|
@@ -112,9 +113,12 @@ debian-release-verification` copied 23 files and a `receipt.json` into a release
 
 ## JuliaFlow cache
 
-The JuliaFlow example now passes `--cache warm` to JuliaFlow's runner, which keeps a locked,
-dependency-keyed cache in the distro. The `pr-cold` and `push-cold` profiles pass `--cache cold`
-for evidence that must not depend on earlier runs. All the evidence above was gathered cold.
+JuliaFlow's default is now native (`examples/juliaflow/easyci.yml`). Its Julia depot, npm cache and
+Playwright browsers stay in the distro between runs, which is the warm path; the `pr-cold`,
+`push-cold` and `release-candidate-cold` profiles give each job empty ones through `setup:`.
+
+Before the switch, the delegated configuration passed `--cache warm` to JuliaFlow's runner, which
+keeps a locked, dependency-keyed cache in the distro. All the evidence above was gathered cold.
 
 Timing of the delegated `julia` job on commit 019f15c:
 

@@ -208,10 +208,12 @@ Workflow `paths:` and `paths-ignore:` filters are evaluated against the files ch
 base and the tested commit (with ordered `!` patterns, as on GitHub). When there is nothing to
 compare with (base equals the commit), the workflow is included and the plan says so.
 
-Worked examples for JuliaFlow: [`examples/juliaflow/easyci.yml`](../examples/juliaflow/easyci.yml)
-delegates every PR job to JuliaFlow's own runner, and
-[`examples/juliaflow/easyci.native.yml`](../examples/juliaflow/easyci.native.yml) runs `web` and
-`julia` natively from the workflow's own steps.
+Worked example for JuliaFlow: [`examples/juliaflow/easyci.yml`](../examples/juliaflow/easyci.yml)
+runs every JuliaFlow job natively from the workflow's own steps, with `setup:`/`cleanup:` for Julia's
+memory settings and the `-cold` profiles for empty caches. The earlier configuration that delegated
+each job to JuliaFlow's own runner is kept in
+[`legacy/juliaflow/easyci.delegated.yml`](../legacy/juliaflow/easyci.delegated.yml); it only works
+on JuliaFlow commits that still have that runner.
 
 ## Where things are kept
 

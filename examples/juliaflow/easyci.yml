@@ -1,77 +1,99 @@
-# EasyCI settings for JuliaFlow (spec section 8.4), kept outside the JuliaFlow repository.
-# Use it with:  easyci run --repo "D:\Julia Project" --profile pr --config examples\juliaflow\easyci.yml
+# EasyCI settings for JuliaFlow (Gravelaw/LowcodeMLtoolkit.jl), kept outside the JuliaFlow repository.
 #
-# JuliaFlow's execution-policy job makes hosted Actions skip everything, so a literal import
-# would honestly skip every job. Here that gate is skipped and each PR job is delegated to
-# JuliaFlow's own proven runner (scripts/ci/wsl.mjs --job <name>), which drives WSL itself,
-# so EasyCI runs it on the Windows host (backend native) inside a clean clone of the commit.
+# EasyCI runs JuliaFlow's own GitHub Actions jobs natively: it reads their steps from
+# .github/workflows/ci.yml and release-candidate.yml and runs them itself in the WSL distro. JuliaFlow
+# no longer needs a runner of its own (Gravelaw/LowcodeMLtoolkit.jl#67). The earlier configuration
+# that delegated every job to JuliaFlow's scripts/ci/wsl.mjs is kept in
+# legacy/juliaflow/easyci.delegated.yml for reference only.
+#
+# Use it with:
+#   easyci run --repo "D:\Julia Project" --profile pr --config examples\juliaflow\easyci.yml
+#   easyci run --repo "D:\Julia Project" --profile release-candidate --config examples\juliaflow\easyci.yml
+#   easyci promote <run-id> --artifact debian-release-verification --to D:\Releases\JuliaFlow
+#
+# Caches: the Julia depot, npm cache and Playwright browsers stay in the distro between runs (the
+# warm path). The -cold profiles give each job empty ones instead, for evidence that must not depend
+# on earlier runs.
+#
+# The variables below give each job what JuliaFlow's tests read: a private PostgreSQL and the
+# JULIAFLOW_* settings.
 version: 1
-backend: native
+backend: wsl:juliaflow-ci-ubuntu24
 report: true
-# Wait while someone runs JuliaFlow's own runner by hand on the same checkout: its summary says
-# `status: running` and its folder keeps changing. A crashed run's stale summary does not block.
-busy_paths: [artifacts/local-ci/*/summary.json]
-# JuliaFlow's runner keeps a warm cache (Julia depot, npm and Playwright caches) in the distro under
-# /ci-cache/<key>, locked with flock and keyed by the dependency files, so a warm run reuses what an
-# earlier run installed. The -cold profiles start from empty caches, for evidence that must not
-# depend on earlier runs (the exit runs and the delegated comparison runs were cold).
 profiles:
-  pr:        {event: pull_request, jobs: [web, julia, debian-release-gate]}
-  pr-cold:   {event: pull_request, jobs: [web, julia, debian-release-gate]}
-  push:      {event: push,         jobs: [web, julia]}
-  push-cold: {event: push,         jobs: [web, julia]}
+  pr:                     {event: pull_request, jobs: [web, julia, debian-release-gate]}
+  pr-cold:                {event: pull_request, jobs: [web, julia, debian-release-gate]}
+  push:                   {event: push, jobs: [web, julia]}
+  push-cold:              {event: push, jobs: [web, julia]}
+  release-candidate:      {event: workflow_dispatch, workflow: release-candidate.yml, jobs: [debian-release-gate]}
+  release-candidate-cold: {event: workflow_dispatch, workflow: release-candidate.yml, jobs: [debian-release-gate]}
 jobs:
   execution-policy:
     skip: true                          # hosted-only gate; EasyCI decides locally
   web:
-    when: always                        # ignore the workflow `if:` for this job
-    backend: native
-    timeout_minutes: 360
+    when: always                        # ignore the workflow `if:` (it waits for execution-policy)
+    timeout_minutes: 120
     stall_minutes: 30
-    command: 'node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job web --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"'
-    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/web/**]
-    # When EasyCI stops a job (cancel, timeout, stall kill) it kills wsl.mjs outright, so wsl.mjs never
-    # reaches its own cleanup and the WSL job keeps its PostgreSQL cluster, 3 GiB swap file and
-    # /ci-run folder. on_kill does what wsl.mjs would have done: kill the WSL process group only if
-    # /proc/<pid>/cmdline proves it is this run's job, then run JuliaFlow's own `wsl-job.sh cleanup`,
-    # which refuses to touch anything whose owner file does not match. The distro name matches the
-    # one wsl.mjs hardcodes. Cleanup files land in the job's evidence folder and are collected.
-    on_kill: &release-wsl-job |
-      found=0
-      for ev in artifacts/local-ci/jfci-*/"$EASYCI_JOB"; do
-        [ -f "$ev/wsl-pid" ] || continue
-        found=1
-        id=$(basename "$(dirname "$ev")")
-        win=$(cd "$(dirname "$ev")" && pwd -W)
-        root="/mnt/$(printf '%s' "${win:0:1}" | tr 'A-Z' 'a-z')${win:2}"
-        echo "releasing JuliaFlow WSL job $id/$EASYCI_JOB ($EASYCI_KILL_REASON)"
-        MSYS_NO_PATHCONV=1 wsl.exe -d juliaflow-ci-ubuntu24 -u root --exec bash -c '
-          pid=$1 root=$2 id=$3 job=$4
-          if cmd=$(tr "\0" "\n" < "/proc/$pid/cmdline" 2>/dev/null) && grep -Fxq "$root/wsl-job.sh" <<<"$cmd" &&
-             grep -Fxq run <<<"$cmd" && grep -Fxq "$id" <<<"$cmd" && grep -Fxq "$job" <<<"$cmd"; then
-            echo "stopping owned WSL process group $pid"
-            kill -TERM -- "-$pid" 2>/dev/null || true; sleep 2; kill -KILL -- "-$pid" 2>/dev/null || true
-          else
-            echo "WSL process $pid is gone or not owned by $id/$job; not killing it"
-          fi
-          tr -d "\r" < "$root/wsl-job.sh" | bash -s -- cleanup "$id" "$job" "$root/$job" && echo "wsl-job.sh cleanup passed"
-        ' _ "$(tr -d '\r\n' < "$ev/wsl-pid")" "$root" "$id" "$EASYCI_JOB"
-      done
-      [ "$found" = 1 ] || echo "no JuliaFlow WSL job had started; nothing to release"
+    services: {postgres: {version: 16}}
+    env: &juliaflow-env
+      JULIAFLOW_CI_EXTERNAL_POSTGRES: "1"
+      JULIAFLOW_DATABASE_URL: ${{ env.DATABASE_URL }}
+      JULIAFLOW_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+      JULIAFLOW_TEST_POSTGRES_SCHEMA: juliaflow_ci_easyci
+      JULIAFLOW_CONTROL_DOC_BASE: ${{ github.event.pull_request.base.sha }}
+      JULIAFLOW_JULIA_CMD: julia
+      JULIAFLOW_CI_HEAP_HINT: 1500M
+      JULIA_NUM_PRECOMPILE_TASKS: "1"
+    # -cold profiles: empty caches for this job only, removed afterwards.
+    setup: &cold-caches |
+      prep="/var/tmp/easyci-$EASYCI_RUN_ID-$EASYCI_JOB"
+      mkdir -p "$prep"
+      case "$EASYCI_PROFILE" in *-cold)
+        mkdir -p "$prep/cold/julia" "$prep/cold/npm" "$prep/cold/playwright"
+        # The trailing colon keeps Julia's bundled depots after the empty one.
+        echo "JULIA_DEPOT_PATH=$prep/cold/julia:" >> "$GITHUB_ENV"
+        echo "npm_config_cache=$prep/cold/npm" >> "$GITHUB_ENV"
+        echo "PLAYWRIGHT_BROWSERS_PATH=$prep/cold/playwright" >> "$GITHUB_ENV"
+        echo "cold caches in $prep/cold";;
+      *) echo "warm caches (the distro's own)";;
+      esac
+    cleanup: &release |
+      prep="/var/tmp/easyci-$EASYCI_RUN_ID-$EASYCI_JOB"
+      if [ -f "$prep/swap" ]; then swapoff "$prep/swap" 2>/dev/null || true; fi
+      rm -rf "$prep"
   julia:
     when: always
-    backend: native
-    timeout_minutes: 360
+    timeout_minutes: 240
     stall_minutes: 45                   # Pkg.instantiate and precompile are quiet
-    command: 'node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job julia --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"'
-    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/julia/**]
-    on_kill: *release-wsl-job
+    services: {postgres: {version: 16}}
+    env: *juliaflow-env
+    # The distro's VM has 4 GiB. Julia gets a 1500M heap-size hint and a temporary 3 GiB swap file
+    # for this job (what JuliaFlow's own runner used to give it); without them the kernel kills the
+    # test process (exit 137). cleanup releases the swap file.
+    setup: &julia-memory |
+      prep="/var/tmp/easyci-$EASYCI_RUN_ID-$EASYCI_JOB"
+      mkdir -p "$prep/bin"
+      case "$EASYCI_PROFILE" in *-cold)
+        mkdir -p "$prep/cold/julia" "$prep/cold/npm" "$prep/cold/playwright"
+        echo "JULIA_DEPOT_PATH=$prep/cold/julia:" >> "$GITHUB_ENV"
+        echo "npm_config_cache=$prep/cold/npm" >> "$GITHUB_ENV"
+        echo "PLAYWRIGHT_BROWSERS_PATH=$prep/cold/playwright" >> "$GITHUB_ENV"
+        echo "cold caches in $prep/cold";;
+      esac
+      printf '#!/bin/sh\nexec %s --heap-size-hint=1500M "$@"\n' "$(command -v julia)" > "$prep/bin/julia"
+      chmod 755 "$prep/bin/julia"
+      echo "$prep/bin" >> "$GITHUB_PATH"
+      fallocate -l 3G "$prep/swap"
+      chmod 600 "$prep/swap"
+      mkswap "$prep/swap" > /dev/null
+      swapon "$prep/swap"
+      echo "julia wrapper with --heap-size-hint=1500M; 3 GiB swap at $prep/swap"
+    cleanup: *release
   debian-release-gate:
     when: always
-    backend: native
     timeout_minutes: 180
     stall_minutes: 45
-    command: 'node scripts/ci/wsl.mjs --ref $EASYCI_SHA --base $EASYCI_BASE --profile pr --job debian-release-gate --cache "$(case "$EASYCI_PROFILE" in *-cold) echo cold;; *) echo warm;; esac)"'
-    evidence: [artifacts/local-ci/*/summary.json, artifacts/local-ci/*/sha256.json, artifacts/local-ci/*/events.jsonl, artifacts/local-ci/*/debian-release-gate/**]
-    on_kill: *release-wsl-job
-    required_env: []
+    services: {postgres: {version: 16}}
+    env: *juliaflow-env
+    setup: *julia-memory
+    cleanup: *release
