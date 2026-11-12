@@ -60,8 +60,9 @@ the only thing on stdout; errors carry `code`, `message` and `fix`. The run keep
 agent session ends. See [docs/usage.md](docs/usage.md) for exit codes and options.
 
 JuliaFlow: `easyci run --repo "D:\Julia Project" --profile pr --config examples\juliaflow\easyci.yml`
-delegates each PR job to JuliaFlow's own `scripts/ci/wsl.mjs` (see
-[`examples/juliaflow/easyci.yml`](examples/juliaflow/easyci.yml)).
+runs JuliaFlow's own workflow jobs natively in its WSL distro (see
+[`examples/juliaflow/easyci.yml`](examples/juliaflow/easyci.yml); profiles `pr`, `push`,
+`release-candidate` and their `-cold` variants).
 
 ## Tests
 
