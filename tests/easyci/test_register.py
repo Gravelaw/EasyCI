@@ -1,12 +1,14 @@
 """`easyci register`: a project remembers an easyci.yml kept outside it and a profile, so runs started
 without flags (the dashboard's Run checks button, the Desktop launcher, `easyci watch`) use them."""
+import contextlib
+import io
 import os
 import pathlib
 import subprocess
 import sys
 
 from ecsupport import EasyCITest
-from easyci import dashboard, store
+from easyci import cli, dashboard, store
 
 TWO = ('on: [push, pull_request]\njobs:\n'
        '  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo job-a\n'
@@ -64,6 +66,15 @@ class Register(EasyCITest):
         projects = [p for p in dashboard.projects() if p['repo'] == str(self.repo)]
         self.assertEqual(len(projects), 1, dashboard.projects())
         return None, projects[0], None
+
+    def test_text_mode_prints_only_sentences(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(['register', '--repo', str(self.repo), '--config', str(self.cfg), '--profile', 'only-a'])
+        self.assertEqual(code, 0, err.getvalue())
+        text = out.getvalue() + err.getvalue()
+        self.assertIn('Runs use profile only-a', text)
+        self.assertNotIn('{', text)  # no JSON document after the sentences
 
     def test_profile_alone_checks_the_repository_config(self):
         doc = self.register('--profile', 'only-a', code=2)
