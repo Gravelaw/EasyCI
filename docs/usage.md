@@ -32,6 +32,7 @@ needed. Without installing, `python -m easyci ...` works from this folder.
 | See recent runs | `easyci list [--state S] [--limit N]` | One line per run |
 | Re-send GitHub marks | `easyci report RUN-ID` | Posts the run's statuses again (use after a network or login problem) |
 | Check evidence is untouched | `easyci verify RUN-ID` | Recomputes every sha256; exit 1 and the file name if anything changed |
+| Remember a config kept outside the repo | `easyci register --config PATH [--profile NAME] [--desktop]` | Later runs use them without flags (see below) |
 | Free disk space | `easyci clean [--keep N]` | Deletes old runs beyond the newest N per project (default 20); never the latest passed run of a profile |
 
 `RUN-ID` looks like `20261107-141205-7f3a`. A unique prefix is enough, and `status`, `logs`,
@@ -61,6 +62,27 @@ easyci run [--repo DIR] [--commit SHA | --ref REF] [--base REF]
 
 Only one run uses the PC at a time. Later runs wait in `queued` and start by themselves, oldest
 first.
+
+## `easyci register`: a config kept outside the repository
+
+```
+easyci register [--repo DIR] [--config PATH] [--profile NAME] [--clear] [--desktop]
+```
+
+Some projects keep their `easyci.yml` outside the repository (JuliaFlow's lives in this repository,
+under `examples/juliaflow/`). `register` saves its path and a profile in the project's
+`project.json` under `%USERPROFILE%\EasyCI`; nothing is written into the repository. From then on:
+
+- `easyci run`, `plan` and `watch` without `--config` use the saved config.
+- Without `--profile`, `--job` or `--workflow` they use the saved profile, unless `--event` asks
+  for a different event than the profile's.
+- The dashboard's **Run checks** button and the Desktop launcher do the same, so they work for
+  such a project too. `--desktop` makes the two launchers. They run this copy of EasyCI, so they
+  work even if EasyCI was not installed with pip.
+
+`register` checks that the config is valid and that the profile is defined in it (or, with no saved
+config, in `easyci.yml` at `HEAD`). `--profile ""` forgets the profile, and `--clear` forgets both.
+If the saved file moves, runs stop with `CONFIG_NOT_FOUND` and say how to fix it.
 
 ## For AI agents: the JSON contract
 
@@ -210,7 +232,9 @@ compare with (base equals the commit), the workflow is included and the plan say
 
 Worked example for JuliaFlow: [`examples/juliaflow/easyci.yml`](../examples/juliaflow/easyci.yml)
 runs every JuliaFlow job natively from the workflow's own steps, with `setup:`/`cleanup:` for Julia's
-memory settings and the `-cold` profiles for empty caches. The earlier configuration that delegated
+memory settings and the `-cold` profiles for empty caches. Register it once
+(`easyci register --repo "D:\Julia Project" --config examples\juliaflow\easyci.yml --profile pr --desktop`)
+and the dashboard and launcher run it. The earlier configuration that delegated
 each job to JuliaFlow's own runner is kept in
 [`legacy/juliaflow/easyci.delegated.yml`](../legacy/juliaflow/easyci.delegated.yml); it only works
 on JuliaFlow commits that still have that runner.

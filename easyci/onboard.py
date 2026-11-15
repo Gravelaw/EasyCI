@@ -408,6 +408,13 @@ def desktop_dir():
     return pathlib.Path.home() / 'Desktop'
 
 
+def _easyci_path_line():
+    # The launcher runs this same EasyCI copy, installed with pip or not (`python -m easyci` from
+    # another folder only finds an installed one). `%` is doubled so cmd keeps it literally.
+    root = str(pathlib.Path(__file__).resolve().parent.parent).replace('%', '%%')
+    return f'set "PYTHONPATH={root};%PYTHONPATH%"\r\n'
+
+
 def write_launcher(repo, python_exe, folder=None):
     """A double-click `Run checks - <project>.cmd` that runs `easyci run --wait` and keeps the window open."""
     name = re.sub(r'[^A-Za-z0-9 ._-]+', '-', pathlib.Path(repo).name) or 'project'
@@ -415,6 +422,7 @@ def write_launcher(repo, python_exe, folder=None):
     target.write_text('@echo off\r\n'
                       f'title EasyCI - {name}\r\n'
                       f'cd /d "{repo}"\r\n'
+                      + _easyci_path_line() +
                       f'"{python_exe}" -m easyci run --wait\r\n'
                       'echo.\r\n'
                       'pause\r\n', encoding='utf-8')
@@ -425,6 +433,7 @@ def write_dashboard_launcher(python_exe, folder=None):
     """A double-click `EasyCI dashboard.cmd` that opens the dashboard in the browser."""
     target = pathlib.Path(folder or desktop_dir()) / 'EasyCI dashboard.cmd'
     target.write_text('@echo off\r\ntitle EasyCI dashboard\r\n'
+                      + _easyci_path_line() +
                       f'"{python_exe}" -m easyci dashboard --open\r\n'
                       'pause\r\n', encoding='utf-8')
     return str(target)

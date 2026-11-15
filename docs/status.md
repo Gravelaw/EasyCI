@@ -47,10 +47,10 @@ JuliaFlow PRs #65, #64 and #63 ran back to back without anyone watching, and eac
 | 1 | PostgreSQL service and job `env` on WSL | Done (real-WSL test passes) |
 | 1 | Jenkins scaffold moved to `legacy/jenkins/` | Done |
 | 1 | `setup:` / `cleanup:` hooks (added at close-out) | Done |
-| 1 | Retire JuliaFlow's `workflows.json` parity check | In progress via Gravelaw/LowcodeMLtoolkit.jl#67: EasyCI's native config is now JuliaFlow's default, and JuliaFlow removes its own runner there |
+| 1 | Retire JuliaFlow's `workflows.json` parity check | Done: Gravelaw/LowcodeMLtoolkit.jl#69 (closes #67) removed JuliaFlow's own runner and the check; EasyCI's native config is JuliaFlow's default |
 | 1 | **Exit: native `web`/`julia` match delegated on 5 commits** | Met: same verdicts on 5484bf6, ed7ec11, 846a025, 019f15c and 3f0da7d (details below) |
 | 2 | `easyci setup` for Node, Python, Julia, Go, Rust, Java, .NET | Done |
-| 2 | Desktop launchers, localhost dashboard | Done |
+| 2 | Desktop launchers, localhost dashboard | Done; `easyci register` lets them use a config kept outside the project (JuliaFlow's) |
 | 2 | `easyci watch`, PR comment, `target_url`, `easyci mcp` | Done |
 | 2 | Exit: the owner runs and reads a result without a terminal | Ready, not yet tried by the owner |
 | 3 | Container backend (`podman:<distro>`, services, job containers) | Done; Podman instead of Docker (owner's choice) |

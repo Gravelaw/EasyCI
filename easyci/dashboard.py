@@ -26,7 +26,8 @@ def projects():
     for pdir in sorted(root.glob('*')) if root.exists() else []:
         info = store.read_json(pdir / 'project.json') or {}
         if info.get('repo'):
-            out.append({'slug': pdir.name, 'repo': info['repo'], 'remote': info.get('remote')})
+            out.append({'slug': pdir.name, 'repo': info['repo'], 'remote': info.get('remote'),
+                        'profile': info.get('profile'), 'config': info.get('config')})
     return out
 
 
@@ -134,7 +135,7 @@ async function home() {
   }
   const projects = p.data.projects, runs = r.data.runs;
   let h = '<h2>Projects</h2>';
-  h += projects.length ? projects.map(x => `<div class="card row"><div class="grow"><b>${esc(x.slug)}</b><div class="muted">${esc(x.repo)}</div></div>
+  h += projects.length ? projects.map(x => `<div class="card row"><div class="grow"><b>${esc(x.slug)}</b><div class="muted">${esc(x.repo)}</div>${x.profile || x.config ? `<div class="muted">${x.profile ? 'profile ' + esc(x.profile) : ''}${x.profile && x.config ? ' · ' : ''}${x.config ? 'config ' + esc(x.config) : ''}</div>` : ''}</div>
     <button class="primary" data-repo="${esc(x.repo)}" onclick="runChecks(this.dataset.repo)">Run checks</button></div>`).join('')
     : '<div class="card muted">No projects yet. Run <code>easyci setup</code> in a project folder.</div>';
   h += '<h2>Recent runs</h2>';

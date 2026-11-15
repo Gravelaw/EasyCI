@@ -43,7 +43,8 @@ easyci watch         # run every new commit of your own open pull requests
 ```
 
 `easyci setup --commit --desktop` also puts "Run checks" and "EasyCI dashboard" launchers on the
-Desktop, so day-to-day use needs no terminal.
+Desktop, so day-to-day use needs no terminal. For a project whose `easyci.yml` lives outside it,
+`easyci register --config PATH --profile NAME --desktop` does the same without touching the project.
 
 ## Quickstart for agents
 

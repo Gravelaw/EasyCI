@@ -149,7 +149,10 @@ def read_config(args, repo, commit):
         try:
             data = path.read_bytes()
         except OSError as error:
-            raise Fail(2, 'CONFIG_NOT_FOUND', f'Cannot read {path}: {error}', 'Check the --config path.') from None
+            fix = (f'The project remembers this path (easyci register). Fix it with: easyci register --config <path>, '
+                   'or forget it with: easyci register --clear' if getattr(args, 'config_saved', False)
+                   else 'Check the --config path.')
+            raise Fail(2, 'CONFIG_NOT_FOUND', f'Cannot read {path}: {error}', fix) from None
         source = str(path.resolve())
     else:
         data, source = snapshot.show(repo, commit, 'easyci.yml'), 'easyci.yml at the tested commit'
@@ -160,6 +163,28 @@ def read_config(args, repo, commit):
     except workflow.ConfigError as error:
         raise Fail(2, 'CONFIG_INVALID', str(error), 'Fix easyci.yml; see docs/usage.md for the keys.') from None
     return cfg, {'source': source, 'sha256': store.digest_bytes(data)}
+
+
+def project_defaults(repo):
+    """The config path and profile saved for a project with `easyci register` ({} when none)."""
+    info = store.read_json(store.project_dir(store.project_slug(repo)) / 'project.json') or {}
+    return {key: info[key] for key in ('config', 'profile') if info.get(key)}
+
+
+def apply_saved_profile(args, cfg, profile):
+    """Use the project's saved profile when the command chose no profile, job or workflow itself.
+
+    An explicit --event that differs from the profile's own event also wins, since the profile
+    would silently replace it."""
+    if not profile or args.profile or args.job or args.workflow:
+        return
+    prof = (cfg.get('profiles') or {}).get(profile)
+    if prof is None:
+        raise Fail(2, 'CONFIG_INVALID', f'The project remembers profile {profile}, which this easyci.yml does not define.',
+                   'Pick another with: easyci register --profile <name>, or forget it with: easyci register --clear')
+    if args.event and prof.get('event', args.event) != args.event:
+        return
+    args.profile = profile
 
 
 def changed_paths(repo, event, base, commit):
@@ -193,7 +218,11 @@ def plan_inputs(args, require_report=False):
     else:
         base = snapshot.merge_base(repo, commit, default)
     event = args.event or ('push' if ref_name == default else 'pull_request')
+    saved = project_defaults(repo)
+    if saved.get('config') and not getattr(args, 'config', None):
+        args.config, args.config_saved = saved['config'], True
     cfg, cfg_info = read_config(args, repo, commit)
+    apply_saved_profile(args, cfg, saved.get('profile'))
     gcfg = global_config()
     paths = [p for p in snapshot.list_tree(repo, commit, '.github/workflows/')
              if p.endswith(('.yml', '.yaml')) and p.count('/') == 2]
@@ -653,6 +682,63 @@ def register_project(repo, fields=None):
     return pdir
 
 
+def cmd_register(args):
+    """Remember a project, and optionally its easyci.yml and profile, for the dashboard and launchers.
+
+    For a project whose easyci.yml lives outside its repository (EasyCI's JuliaFlow example), so
+    that `easyci run`, the dashboard's Run checks button and the Desktop launcher use it without
+    --config and --profile. Nothing is written into the repository."""
+    from easyci import onboard
+    repo = find_repo(args.repo)
+    saved = {} if args.clear else project_defaults(repo)
+    fields = {'remote': github.parse_remote(snapshot.origin_url(repo))}
+    if args.clear:
+        fields.update(config=None, profile=None)
+    if args.config:
+        path = pathlib.Path(args.config).resolve()
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            raise Fail(2, 'CONFIG_NOT_FOUND', f'Cannot read {path}: {error}', 'Check the --config path.') from None
+        try:
+            workflow.load_config(data.decode('utf-8'), str(path))
+        except workflow.ConfigError as error:
+            raise Fail(2, 'CONFIG_INVALID', str(error), 'Fix easyci.yml; see docs/usage.md for the keys.') from None
+        fields['config'] = saved['config'] = str(path)
+    if args.profile is not None:
+        fields['profile'] = saved['profile'] = args.profile or None
+    if saved.get('profile'):
+        if saved.get('config'):
+            source = saved['config']
+            try:
+                data = pathlib.Path(source).read_bytes()
+            except OSError as error:  # the saved config has moved since it was registered
+                raise Fail(2, 'CONFIG_NOT_FOUND', f'Cannot read the saved config {source}: {error}',
+                           'Save its new path with: easyci register --config <path>, '
+                           'or forget it with: easyci register --clear') from None
+        else:
+            data, source = snapshot.show(repo, 'HEAD', 'easyci.yml'), 'easyci.yml at HEAD'
+        try:
+            cfg = workflow.load_config(data.decode('utf-8'), source) if data is not None else {}
+        except workflow.ConfigError as error:
+            raise Fail(2, 'CONFIG_INVALID', str(error), 'Fix easyci.yml; see docs/usage.md for the keys.') from None
+        if saved['profile'] not in (cfg.get('profiles') or {}):
+            names = ', '.join(sorted(cfg.get('profiles') or {})) or 'none'
+            raise Fail(2, 'CONFIG_INVALID', f'Profile {saved["profile"]} is not defined in {source} (profiles: {names}).',
+                       'Pass one of its profiles with --profile, or --profile "" for none.')
+    pdir = register_project(repo, fields)
+    result = {'project': pdir.name, 'repo': str(repo), 'config': saved.get('config'), 'profile': saved.get('profile')}
+    say(args, f'Registered {repo} as {pdir.name}.')
+    say(args, f'Runs use {saved["config"]}.' if saved.get('config') else 'Runs use easyci.yml at the tested commit.')
+    if saved.get('profile'):
+        say(args, f'Runs use profile {saved["profile"]} unless you choose a profile, job or workflow.')
+    if args.desktop:
+        result['launcher'] = onboard.write_launcher(repo, sys.executable)
+        result['dashboard_launcher'] = onboard.write_dashboard_launcher(sys.executable)
+        say(args, f'Made double-click launchers: {result["launcher"]} and {result["dashboard_launcher"]}')
+    return result
+
+
 def cmd_watch(args):
     from easyci import watch
     repo = find_repo(args.repo)
@@ -786,7 +872,13 @@ def build_parser():
     p.add_argument('--commit', action='store_true', help='write and commit only those files')
     p.add_argument('--desktop', action='store_true', help='put a "Run checks" launcher on the Desktop')
     p.add_argument('--run', action='store_true', help='start a run afterwards')
-    add('mcp', cmd_mcp, 'Serve the EasyCI tools to an AI agent over MCP (stdio).')
+    p = add('register', cmd_register, 'Remember a project and, optionally, the easyci.yml and profile its runs use.')
+    p.add_argument('--repo')
+    p.add_argument('--config', help='easyci.yml kept outside the repository, used when a run gives no --config')
+    p.add_argument('--profile', help='profile used when a run gives no profile, job or workflow ("" for none)')
+    p.add_argument('--clear', action='store_true', help='forget the saved config and profile')
+    p.add_argument('--desktop', action='store_true', help='put "Run checks" and dashboard launchers on the Desktop')
+    add('mcp', cmd_mcp,'Serve the EasyCI tools to an AI agent over MCP (stdio).')
     p = add('watch', cmd_watch, 'Queue a run for every new commit on your open pull requests.')
     p.add_argument('--repo')
     p.add_argument('--interval', type=float, default=5, help='minutes between checks (at least 1)')
