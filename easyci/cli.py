@@ -235,7 +235,8 @@ def plan_inputs(args, require_report=False):
            'base_ref': getattr(args, 'base_ref', None),
            'repository': repository or '', 'profile': args.profile, 'jobs': args.job, 'workflow': args.workflow,
            'backend': args.backend, 'default_backend': gcfg.get('backend'),
-           'changed': changed_paths(repo, event, base, commit)}
+           'changed': changed_paths(repo, event, base, commit),
+           'read_file': lambda path: snapshot.show(repo, commit, path)}  # files at the tested commit
     try:
         plan = workflow.build_plan(files, cfg, inp)
     except workflow.ConfigError as error:

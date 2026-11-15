@@ -37,7 +37,7 @@ SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python':
 # setup-uv inputs that only concern its download or the hosted cache, so they change nothing
 # when uv is already installed. Anything else (python-version, activate-environment, tool-dir,
 # ...) changes the job's environment and is reported unsupported rather than ignored.
-UV_IGNORED = {'version', 'enable-cache', 'cache-dependency-glob', 'cache-suffix', 'cache-local-path', 'prune-cache',
+UV_IGNORED = {'version', 'enable-cache', 'cache-dependency-glob', 'cache-suffix', 'prune-cache',
               'ignore-nothing-to-cache', 'ignore-empty-workdir', 'github-token', 'working-directory', 'checksum',
               'save-cache', 'restore-cache', 'cache-python', 'manifest-file', 'server-url'}
 CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')  # local caches since Phase 1
@@ -296,6 +296,39 @@ def step_name(step):
     return 'Run ' + str(step.get('uses', 'step'))
 
 
+def uv_required_version(with_, ctx):
+    """The uv version setup-uv picks when its `version` input is left out: `required-version` from
+    uv.toml, else `[tool.uv] required-version` from pyproject.toml, in its working-directory at the
+    tested commit. None when neither pins one (setup-uv then installs the latest)."""
+    import tomllib
+    read = ctx.get('read_file')
+    if read is None:  # planning without the repository (direct callers): nothing to read
+        return None
+    folder = str(with_.get('working-directory') or '').strip()
+    if '${{' in folder:
+        raise Unsupported('toolchain_spec_unsupported:uv working-directory expression')
+    folder = folder.replace('\\', '/').strip('/').removeprefix('./')
+    for name, keys in (('uv.toml', ('required-version',)), ('pyproject.toml', ('tool', 'uv', 'required-version'))):
+        path = f'{folder}/{name}' if folder and folder != '.' else name
+        data = read(path)
+        if data is None:
+            continue
+        try:
+            value = tomllib.loads(data.decode('utf-8'))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+            raise Unsupported(f'toolchain_spec_unsupported:uv cannot read {path}') from None
+        for key in keys:
+            value = value.get(key) if isinstance(value, dict) else None
+        if value is None:
+            continue
+        spec = str(value).strip()
+        exact = re.fullmatch(r'(?:==\s*)?v?(\d+(?:\.\d+)*)', spec)
+        if not exact:  # a range (>=0.5, ~=0.5): EasyCI checks one version, never a range
+            raise Unsupported(f'toolchain_spec_unsupported:uv required-version {spec} in {path}')
+        return exact.group(1)
+    return None
+
+
 def plan_step(index, step, ctx):
     """Map one workflow step; raise Unsupported with a precise reason."""
     unknown = set(step) - STEP_KEYS
@@ -346,6 +379,8 @@ def plan_step(index, step, ctx):
                                                                  'strategy': ctx.get('strategy') or {}}))
         if tool == 'uv' and str(requested).strip().lower() == 'latest':  # after interpolation: ${{ matrix.uv }}
             requested = None  # setup-uv's default; any installed uv will do
+        elif tool == 'uv' and requested is None:
+            requested = uv_required_version(with_, ctx)
         if requested is not None:
             version_spec(requested, tool)
         out.update(kind='toolchain', tool=tool, requested=None if requested is None else str(requested),
@@ -602,7 +637,7 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
     skip_steps = jcfg.get('skip_steps', [])
     # The resolved runner (a matrix `runs-on: ${{ matrix.os }}` is already filled in) picks the default shell.
     ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(out['runs_on']), 'github': gh,
-           'matrix': matrix or {}, 'strategy': strategy or {}}
+           'matrix': matrix or {}, 'strategy': strategy or {}, 'read_file': inp.get('read_file')}
     for index, step in enumerate(job.get('steps') or [], 1):
         if not isinstance(step, dict):
             raise ConfigError(f'{wf_path}: job {jid} step {index} must be a mapping')

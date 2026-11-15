@@ -21,8 +21,11 @@ def uv_job(with_='', run='uv --version'):
             '      - uses: actions/checkout@v4\n' + step + f'      - run: {run}\n')
 
 
-def plan_job(text):
-    plan = workflow.build_plan([('.github/workflows/ci.yml', text.encode())], {}, dict(INP))
+def plan_job(text, files=None):
+    inp = dict(INP)
+    if files is not None:  # the repository at the tested commit, as the CLI gives it
+        inp['read_file'] = lambda path: files[path].encode() if path in files else None
+    plan = workflow.build_plan([('.github/workflows/ci.yml', text.encode())], {}, inp)
     return {j['id']: j for j in plan['jobs']}['j']
 
 
@@ -49,8 +52,36 @@ class Mapping(unittest.TestCase):
         got = {j['id']: (j['predicted'], j['steps'][0].get('requested')) for j in plan['jobs']}
         self.assertEqual(got, {'j-latest': ('run', None), 'j-0.12': ('run', '0.12')})
 
+    def test_without_a_version_input_the_project_pin_is_checked(self):
+        # setup-uv reads required-version from uv.toml, else [tool.uv] in pyproject.toml.
+        pyproject = '[project]\nname = "x"\n[tool.uv]\nrequired-version = "{}"\n'
+        cases = [({}, None),
+                 ({'pyproject.toml': '[project]\nname = "x"\n'}, None),
+                 ({'pyproject.toml': pyproject.format('==0.12.1')}, '0.12.1'),
+                 ({'pyproject.toml': pyproject.format('0.12')}, '0.12'),
+                 ({'uv.toml': 'required-version = "0.11.4"\n', 'pyproject.toml': pyproject.format('0.12')}, '0.11.4'),
+                 ({'uv.toml': 'native-tls = true\n', 'pyproject.toml': pyproject.format('0.12')}, '0.12')]
+        for files, requested in cases:
+            with self.subTest(files=files):
+                job = plan_job(uv_job(), files)
+                self.assertEqual((job['predicted'], job['steps'][1]['requested']), ('run', requested))
+        # An explicit version input wins over the files, and working-directory picks the folder.
+        job = plan_job(uv_job('          version: "0.10"\n'), {'pyproject.toml': pyproject.format('0.12')})
+        self.assertEqual(job['steps'][1]['requested'], '0.10')
+        job = plan_job(uv_job('          working-directory: app\n'),
+                       {'pyproject.toml': pyproject.format('0.12'), 'app/uv.toml': 'required-version = "0.9.2"\n'})
+        self.assertEqual(job['steps'][1]['requested'], '0.9.2')
+        # A range cannot be checked against one installed version; an unreadable file is not skipped.
+        for files, reason in (({'pyproject.toml': pyproject.format('>=0.5')},
+                               'toolchain_spec_unsupported:uv required-version >=0.5 in pyproject.toml'),
+                              ({'uv.toml': 'required-version = \n'}, 'toolchain_spec_unsupported:uv cannot read uv.toml')):
+            with self.subTest(reason=reason):
+                job = plan_job(uv_job(), files)
+                self.assertEqual((job['predicted'], job['predicted_reason']), ('unsupported', reason))
+
     def test_inputs_that_change_the_environment_are_unsupported(self):
         cases = {'          python-version: "3.12"\n': 'toolchain_spec_unsupported:uv python-version',
+                 '          cache-local-path: /tmp/uv\n': 'toolchain_spec_unsupported:uv cache-local-path',
                  '          activate-environment: true\n': 'toolchain_spec_unsupported:uv activate-environment',
                  '          tool-dir: /opt/uv\n          tool-bin-dir: /opt/bin\n':
                      'toolchain_spec_unsupported:uv tool-bin-dir, tool-dir',
@@ -68,6 +99,17 @@ class Mapping(unittest.TestCase):
 
 
 class Runs(EasyCITest):
+    def test_a_pin_in_pyproject_is_read_from_the_tested_commit(self):
+        files = {'pyproject.toml': '[project]\nname = "x"\n[tool.uv]\nrequired-version = "0.12"\n'}
+        repo = self.make_repo(uv_job(run='echo uv-ok'), files, remote='https://github.com/owner/repo.git')
+        os.environ['EASYCI_FAKE_PROBES'] = json.dumps({'uv': 'uv 0.11.4', 'git': 'git version 2.50'})
+        code, doc, err = self.call('plan', '--repo', repo, '--backend', 'fake', '--event', 'pull_request')
+        self.assertEqual(code, 0, (doc, err))
+        self.assertEqual(doc['data']['jobs'][0]['toolchains'][0]['requested'], '0.12')
+        got, doc, err = self.call('run', '--repo', repo, '--backend', 'fake', '--no-report', '--event', 'pull_request')
+        got, data = self.wait(doc['data']['run_id'])
+        self.assertEqual((got, data['jobs'][0].get('reason')), (4, 'toolchain_mismatch:uv 0.11.4 != 0.12'))
+
     def test_uv_is_verified_on_the_backend(self):
         repo = self.make_repo(uv_job('          version: "0.12"\n', run='echo uv-ok'), remote='https://github.com/owner/repo.git')
         for probe, code, state, reason in (('uv 0.12.1 (x86_64-unknown-linux-gnu)', 0, 'passed', None),
