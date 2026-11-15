@@ -736,7 +736,7 @@ def cmd_register(args):
         result['launcher'] = onboard.write_launcher(repo, sys.executable)
         result['dashboard_launcher'] = onboard.write_dashboard_launcher(sys.executable)
         say(args, f'Made double-click launchers: {result["launcher"]} and {result["dashboard_launcher"]}')
-    return result
+    return result if args.json else None  # the sentences above already said it all
 
 
 def cmd_watch(args):
