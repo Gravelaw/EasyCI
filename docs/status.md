@@ -57,7 +57,7 @@ JuliaFlow PRs #65, #64 and #63 ran back to back without anyone watching, and eac
 | 3 | Artifact store, `data:` hashes, `compare`, GPU check | Done |
 | 3 | `promote` with receipt and fail-closed lock | Done |
 | 3 | **Exit: release candidate runs natively and promotes** | Met: rc-native passed in 56 min on 019f15c; promoted with a verified receipt (details below) |
-| 4 | Machine labels in status contexts | Done (two simulated machines) |
+| 4 | Machine labels in status contexts | Done (two simulated machines; a check on two real PCs was skipped, owner's decision) |
 | 4 | Team guide; Podman vs Dagger evaluation | Done |
 | 4 | GitHub App for Check Runs | Not done: owner's decision |
 
@@ -79,7 +79,7 @@ JuliaFlow PRs #65, #64 and #63 ran back to back without anyone watching, and eac
 - **Commit statuses, not Check Runs.** No annotations on files; the failure excerpt is in the status
   description, `easyci explain` and the optional PR comment.
 - **One machine verified.** Two-machine reporting is tested with two simulated EasyCI homes, not two
-  real PCs.
+  real PCs. The owner chose to skip a check on a real second PC.
 - **Python 3.11:** everything passes except the legacy Jenkins scaffold's jsonschema test, which is
   outside the default suite.
 - **`actions/cache` inside job containers** is always a miss and is never saved. The cache store
