@@ -631,8 +631,14 @@ def cmd_setup(args):
             say(args, line)
     write = args.write or args.commit
     if result['files'] and not write and not args.json and sys.stdin.isatty():
-        answer = input('Write these files now? [Y/n] ').strip().lower()
+        try:
+            answer = input('Write these files now? [Y/n] ').strip().lower()
+        except EOFError:  # a terminal with no one typing (an agent, a script): write nothing
+            say(args, '')
+            answer = 'n'
         write = answer in ('', 'y', 'yes')
+        if not write:
+            say(args, 'Nothing written. Run `easyci setup --write` (or --commit) to write them.')
     written = onboard.write(repo, result['files']) if write else []
     for item in result['files']:
         item['written'] = item['path'] in written

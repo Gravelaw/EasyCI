@@ -33,7 +33,13 @@ STEP_KEYS = {'name', 'id', 'if', 'run', 'uses', 'with', 'env', 'shell', 'working
              'timeout-minutes'}
 SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python': ('python', 'python-version'),
          'julia-actions/setup-julia': ('julia', 'version'), 'actions/setup-java': ('java', 'java-version'),
-         'actions/setup-go': ('go', 'go-version')}
+         'actions/setup-go': ('go', 'go-version'), 'astral-sh/setup-uv': ('uv', 'version')}
+# setup-uv inputs that only concern its download or the hosted cache, so they change nothing
+# when uv is already installed. Anything else (python-version, activate-environment, tool-dir,
+# ...) changes the job's environment and is reported unsupported rather than ignored.
+UV_IGNORED = {'version', 'enable-cache', 'cache-dependency-glob', 'cache-suffix', 'cache-local-path', 'prune-cache',
+              'ignore-nothing-to-cache', 'ignore-empty-workdir', 'github-token', 'working-directory', 'checksum',
+              'save-cache', 'restore-cache', 'cache-python', 'manifest-file', 'server-url'}
 CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')  # local caches since Phase 1
 SHELLS = {'bash', 'sh', 'pwsh', 'powershell', 'cmd'}
 BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?|podman:[A-Za-z0-9._-]+)\Z')
@@ -328,9 +334,15 @@ def plan_step(index, step, ctx):
         out.update(kind='checkout', path=with_.get('path') or '', decision='clean clone of the run commit from the bundle')
     elif name in SETUP:
         tool, key = SETUP[name]
-        if any(k.endswith('-file') for k in with_):
+        if any(str(k).endswith('-file') and not (tool == 'uv' and k == 'manifest-file') for k in with_):
             raise Unsupported(f'toolchain_spec_unsupported:{tool} version file')
+        if tool == 'uv':
+            extra = sorted(str(k) for k in with_ if k not in UV_IGNORED)
+            if extra:
+                raise Unsupported(f'toolchain_spec_unsupported:uv {", ".join(extra)}')
         requested = with_.get(key)
+        if tool == 'uv' and str(requested).strip().lower() == 'latest':
+            requested = None  # setup-uv's default; any installed uv will do
         if isinstance(requested, str) and '${{' in requested:  # e.g. node-version: ${{ matrix.node }}
             requested = expr.to_str(expr.interpolate(requested, {'github': ctx['github'], 'matrix': ctx.get('matrix') or {},
                                                                  'strategy': ctx.get('strategy') or {}}))

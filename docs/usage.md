@@ -124,9 +124,13 @@ Branch on `data.state` (`queued`, `preparing`, `running`, `passed`, `failed`, `u
   `timeout-minutes`, `id` with `$GITHUB_OUTPUT`, `$GITHUB_ENV`, `$GITHUB_STEP_SUMMARY`, job
   `outputs`, `needs`.
 - `actions/checkout@v3..v5` (clean clone of the tested commit), `actions/setup-node`,
-  `setup-python`, `setup-julia`, `setup-java`, `setup-go` (the installed version is **checked**, not
-  installed; a setup step with an `if:` is checked only when it runs), `actions/upload-artifact` and
-  `actions/download-artifact` (v3/v4, between jobs of the same run).
+  `setup-python`, `setup-julia`, `setup-java`, `setup-go` and `astral-sh/setup-uv` (the installed
+  version is **checked**, not installed; a setup step with an `if:` is checked only when it runs),
+  `actions/upload-artifact` and `actions/download-artifact` (v3/v4, between jobs of the same run).
+  For `setup-uv`, `version: latest` accepts any installed uv, and the cache and download inputs
+  (`enable-cache`, `cache-dependency-glob`, `github-token`, ...) are ignored; inputs that change the
+  job's environment (`python-version`, `activate-environment`, `tool-dir`, ...) are reported
+  unsupported.
 - `actions/cache`, `actions/cache/restore`, `actions/cache/save` (v3/v4) with a **local** cache:
   the exact key first, then the newest entry for each `restore-keys` prefix; `actions/cache` saves
   after the job passes. Outputs `cache-hit`, `cache-primary-key`, `cache-matched-key`. Native jobs
