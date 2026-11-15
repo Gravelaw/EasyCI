@@ -40,6 +40,15 @@ class Mapping(unittest.TestCase):
                 self.assertEqual((step['kind'], step['tool'], step['requested']), ('toolchain', 'uv', requested))
                 self.assertEqual(job['toolchains'], [{'tool': 'uv', 'requested': requested, 'step': 2, 'if': None}])
 
+    def test_latest_from_a_matrix_is_the_same_as_literal_latest(self):
+        text = ('on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n'
+                '    strategy: {matrix: {uv: [latest, "0.12"]}}\n    steps:\n'
+                '      - uses: astral-sh/setup-uv@v10.3.3\n        with:\n          version: ${{ matrix.uv }}\n'
+                '      - run: uv --version\n')
+        plan = workflow.build_plan([('.github/workflows/ci.yml', text.encode())], {}, dict(INP))
+        got = {j['id']: (j['predicted'], j['steps'][0].get('requested')) for j in plan['jobs']}
+        self.assertEqual(got, {'j-latest': ('run', None), 'j-0.12': ('run', '0.12')})
+
     def test_inputs_that_change_the_environment_are_unsupported(self):
         cases = {'          python-version: "3.12"\n': 'toolchain_spec_unsupported:uv python-version',
                  '          activate-environment: true\n': 'toolchain_spec_unsupported:uv activate-environment',

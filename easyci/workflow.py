@@ -341,11 +341,11 @@ def plan_step(index, step, ctx):
             if extra:
                 raise Unsupported(f'toolchain_spec_unsupported:uv {", ".join(extra)}')
         requested = with_.get(key)
-        if tool == 'uv' and str(requested).strip().lower() == 'latest':
-            requested = None  # setup-uv's default; any installed uv will do
         if isinstance(requested, str) and '${{' in requested:  # e.g. node-version: ${{ matrix.node }}
             requested = expr.to_str(expr.interpolate(requested, {'github': ctx['github'], 'matrix': ctx.get('matrix') or {},
                                                                  'strategy': ctx.get('strategy') or {}}))
+        if tool == 'uv' and str(requested).strip().lower() == 'latest':  # after interpolation: ${{ matrix.uv }}
+            requested = None  # setup-uv's default; any installed uv will do
         if requested is not None:
             version_spec(requested, tool)
         out.update(kind='toolchain', tool=tool, requested=None if requested is None else str(requested),
