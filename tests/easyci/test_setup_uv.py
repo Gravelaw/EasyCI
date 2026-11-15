@@ -92,6 +92,8 @@ class Mapping(unittest.TestCase):
 
         for checkout, workdir, requested in (('source', 'source', '0.12'), ('source', 'source/app', '0.9.2'),
                                              ('./source/', './source', '0.12'), ('', '', '0.12'),
+                                             ('', 'app/.', '0.9.2'), ('', 'app/..', '0.12'),
+                                             ('source', 'source/app/../app', '0.9.2'),
                                              (None, '', None)):  # nothing checked out: no files to read
             with self.subTest(checkout=checkout, workdir=workdir):
                 planned = plan_job(job(checkout, workdir), files)
@@ -100,10 +102,28 @@ class Mapping(unittest.TestCase):
         for checkout, workdir, reason in (
                 ('source', 'other', 'toolchain_spec_unsupported:uv working-directory other is outside the checkout'),
                 ('source', '', 'toolchain_spec_unsupported:uv working-directory (the workspace root) is outside the checkout'),
-                ('${{ github.event_name }}', '', 'toolchain_spec_unsupported:uv checkout path expression')):
+                ('${{ github.event_name }}', '', 'toolchain_spec_unsupported:uv checkout path expression'),
+                ('', '/srv/app', 'toolchain_spec_unsupported:uv working-directory /srv/app is absolute'),
+                ('', 'app/../..', 'toolchain_spec_unsupported:uv working-directory app/../.. is outside the workspace')):
             with self.subTest(reason=reason):
                 planned = plan_job(job(checkout, workdir), files)
                 self.assertEqual((planned['predicted'], planned['predicted_reason']), ('unsupported', reason))
+
+    def test_a_conditional_checkout_makes_the_pin_unknowable(self):
+        # The checkout may be skipped at run time, and then there are no files to pin uv.
+        files = {'pyproject.toml': '[tool.uv]\nrequired-version = "0.12"\n'}
+        for condition, expected in (('false', ('unsupported', 'toolchain_spec_unsupported:uv pin after a conditional checkout')),
+                                    ("github.event_name == 'push'",
+                                     ('unsupported', 'toolchain_spec_unsupported:uv pin after a conditional checkout')),
+                                    ('true', ('run', None))):
+            with self.subTest(condition=condition):
+                text = ('on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
+                        f'      - uses: actions/checkout@v4\n        if: {condition}\n'
+                        '      - uses: astral-sh/setup-uv@v10.3.3\n      - run: uv --version\n')
+                planned = plan_job(text, files)
+                self.assertEqual((planned['predicted'], planned.get('predicted_reason')), expected)
+                if expected[0] == 'run':
+                    self.assertEqual(planned['steps'][1]['requested'], '0.12')
 
     def test_inputs_that_change_the_environment_are_unsupported(self):
         cases = {'          python-version: "3.12"\n': 'toolchain_spec_unsupported:uv python-version',

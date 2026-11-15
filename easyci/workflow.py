@@ -296,6 +296,21 @@ def step_name(step):
     return 'Run ' + str(step.get('uses', 'step'))
 
 
+def workspace_folder(value, what):
+    """A workspace-relative folder in normal form ('' for the root): `app/.` is app, `app/..` the
+    root. An expression, an absolute path or one that climbs out of the workspace is unsupported."""
+    import posixpath
+    text = str(value or '').strip().replace('\\', '/')
+    if '${{' in text:
+        raise Unsupported(f'toolchain_spec_unsupported:uv {what} expression')
+    if text.startswith('/') or re.match(r'[A-Za-z]:', text):
+        raise Unsupported(f'toolchain_spec_unsupported:uv {what} {text} is absolute')
+    norm = posixpath.normpath(text) if text else '.'
+    if norm == '..' or norm.startswith('../'):
+        raise Unsupported(f'toolchain_spec_unsupported:uv {what} {text} is outside the workspace')
+    return '' if norm == '.' else norm
+
+
 def uv_required_version(with_, ctx):
     """The uv version setup-uv picks when its `version` input is left out: `required-version` from
     uv.toml, else `[tool.uv] required-version` from pyproject.toml, in its working-directory at the
@@ -304,20 +319,16 @@ def uv_required_version(with_, ctx):
     read = ctx.get('read_file')
     if read is None:  # planning without the repository (direct callers): nothing to read
         return None
-    folder = str(with_.get('working-directory') or '').strip()
-    if '${{' in folder:
-        raise Unsupported('toolchain_spec_unsupported:uv working-directory expression')
-    folder = folder.replace('\\', '/').strip('/').removeprefix('./')
-    folder = '' if folder == '.' else folder
+    folder = workspace_folder(with_.get('working-directory'), 'working-directory')
     # The folder is in the workspace; the files are read from the repository. A checkout with
     # `path: src` puts the repository's root at src/, so src/app is app/ in the repository.
     checkouts = ctx.get('checkouts') or []
     if not checkouts:  # no checkout before this step: the workspace has none of the project's files
         return None
-    if any('${{' in p for p in checkouts):
-        raise Unsupported('toolchain_spec_unsupported:uv checkout path expression')
-    roots = [p.replace('\\', '/').strip('/').removeprefix('./') for p in checkouts]
-    roots = ['' if r == '.' else r for r in roots]
+    if any(c['if'] not in (None, '', True, 'true') for c in checkouts):
+        # Whether that checkout runs is only known at run time, and with it whether the files exist.
+        raise Unsupported('toolchain_spec_unsupported:uv pin after a conditional checkout')
+    roots = [workspace_folder(c['path'], 'checkout path') for c in checkouts]
     under = [r for r in roots if not r or folder == r or folder.startswith(r + '/')]
     if not under:
         raise Unsupported(f'toolchain_spec_unsupported:uv working-directory {folder or "(the workspace root)"} '
@@ -669,7 +680,7 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
                       'uses': step.get('uses'), 'decision': str(error)}
         out['steps'].append(mapped)
         if mapped['kind'] == 'checkout':  # where later steps find the repository's files
-            ctx.setdefault('checkouts', []).append(str(mapped.get('path') or ''))
+            ctx.setdefault('checkouts', []).append({'path': str(mapped.get('path') or ''), 'if': step.get('if')})
         if mapped['kind'] == 'toolchain' and out['toolchain_policy'].get(mapped['tool']) != 'ignore':
             out['toolchains'].append({'tool': mapped['tool'], 'requested': mapped['requested'], 'step': index,
                                       'if': mapped.get('if')})
