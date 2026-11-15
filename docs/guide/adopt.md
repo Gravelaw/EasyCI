@@ -40,7 +40,8 @@ decisions to make along the way.
 7. **Turn reporting on** (`report: true`), and in GitHub's branch protection decide whether the
    `easyci` context is required. Hosted jobs that EasyCI replaces can then be skipped there, the way
    JuliaFlow's `execution-policy` job does it.
-8. **Optional:** `--desktop` launchers, `easyci dashboard`, `easyci watch --once` in Task
+8. **Optional:** `--desktop` launchers, `easyci dashboard` (for a config kept outside the project,
+   `easyci register --config PATH --profile NAME --desktop` first), `easyci watch --once` in Task
    Scheduler for your own PRs, `pr_comment: true`, and `machine_label: true` if a second PC reports
    on the same PRs ([team.md](team.md)).
 

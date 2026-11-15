@@ -11,6 +11,9 @@
 #   easyci run --repo "D:\Julia Project" --profile release-candidate --config examples\juliaflow\easyci.yml
 #   easyci promote <run-id> --artifact debian-release-verification --to D:\Releases\JuliaFlow
 #
+# Or register it once, so the dashboard's Run checks button and the Desktop launcher use it:
+#   easyci register --repo "D:\Julia Project" --config examples\juliaflow\easyci.yml --profile pr --desktop
+#
 # Caches: the Julia depot, npm cache and Playwright browsers stay in the distro between runs (the
 # warm path). The -cold profiles give each job empty ones instead, for evidence that must not depend
 # on earlier runs.
