@@ -1,0 +1,66 @@
+# EasyCI settings for Ithax (Gravelaw/Ithax), kept outside the Ithax repository.
+#
+# EasyCI runs Ithax's own GitHub Actions jobs from .github/workflows/checks.yml in a WSL distro
+# made for it, ithax-ci-ubuntu24. Its tools are installed once: Python 3.11 and 3.13 (uv-managed,
+# as python3.11 / python3.13), uv, Node 22, Rust with rustfmt and clippy, Tauri's Linux
+# prerequisites, WebKitWebDriver and Xvfb. The distro's PATH leaves out Windows' own folders.
+#
+# Use it with:
+#   easyci run --repo D:\Ithax --profile pr --config examples\ithax\easyci.yml --no-report
+# or register it once, for the dashboard and a Desktop launcher:
+#   easyci register --repo D:\Ithax --config examples\ithax\easyci.yml --profile pr --desktop
+#
+# Profiles:
+#   pr / push   every code job (checks on 3.11 and 3.13, interface, desktop, package)
+#   quick       checks and interface only, without the Rust and packaging jobs
+version: 1
+backend: wsl:ithax-ci-ubuntu24
+report: false                           # turn on once EasyCI's verdicts match GitHub's
+profiles:
+  pr:    {event: pull_request, jobs: [checks, interface, desktop, package]}
+  push:  {event: push, jobs: [checks, interface, desktop, package]}
+  quick: {event: pull_request, jobs: [checks, interface]}
+jobs:
+  all-green: {skip: true}               # hosted aggregate; EasyCI's own `easyci` context does this
+  pr-title: {skip: true}                # needs the pull request's title; GitHub checks it in seconds
+  checks:
+    timeout_minutes: 40
+    stall_minutes: 20
+    toolchains: {python: ignore}        # the distro's python3 is 3.12; setup picks the matrix one
+    env: {EASYCI_PYTHON: "${{ matrix.python-version }}"}
+    # setup-python puts `python` on PATH at the requested version. Here the matching
+    # python3.11 / python3.13 is linked as python and python3 in a folder put first on PATH.
+    # Tools that `cargo install` adds (tauri-driver) live in /root/.cargo/bin.
+    setup: &python |
+      v="${EASYCI_PYTHON:-3.13}"
+      bin="/var/tmp/easyci-$EASYCI_RUN_ID-$EASYCI_JOB/bin"
+      mkdir -p "$bin"
+      exe="$(command -v "python$v")" || { echo "python$v is not installed in this distro"; exit 1; }
+      ln -sf "$exe" "$bin/python"
+      ln -sf "$exe" "$bin/python3"
+      echo "$bin" >> "$GITHUB_PATH"
+      echo /root/.cargo/bin >> "$GITHUB_PATH"
+      echo "python -> $("$bin/python" --version)"
+    cleanup: &release |
+      rm -rf "/var/tmp/easyci-$EASYCI_RUN_ID-$EASYCI_JOB"
+  interface:
+    timeout_minutes: 40
+    stall_minutes: 20
+    toolchains: {python: ignore}
+    env: {EASYCI_PYTHON: "3.13"}
+    setup: *python
+    cleanup: *release
+  desktop:
+    timeout_minutes: 60
+    stall_minutes: 30                   # cargo builds are quiet for a while
+    toolchains: {python: ignore}
+    env: {EASYCI_PYTHON: "3.13"}
+    setup: *python
+    cleanup: *release
+  package:
+    timeout_minutes: 60
+    stall_minutes: 30
+    toolchains: {python: ignore}
+    env: {EASYCI_PYTHON: "3.13"}
+    setup: *python
+    cleanup: *release

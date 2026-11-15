@@ -1,0 +1,202 @@
+name: checks
+
+# Design and action pins: docs/DECISIONS.md, 2026-11-06 · M0, "CI workflow (AKS-73)"; revised by
+# docs/retrospective/proposed-agent-setup.md, P3 (no duplicate benchmark job, timeouts,
+# main runs never cancelled, one all-green check for branch protection; #99).
+
+on:
+  # Default pull_request types (opened, synchronize, reopened). Title edits are handled by
+  # pr-title.yml, so a title edit never publishes a skipped, and so passing, code check.
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: jobs only read the repository.
+permissions:
+  contents: read
+
+# PR runs: a newer push cancels the older run. Pushes to main: one group per commit, so
+# every merge to main is tested and none is cancelled by the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # The locked environment (uv.lock; #99, retrospective P9): `--locked` fails when the lock
+      # no longer matches pyproject.toml. Its bin folder goes first on PATH, so the steps below
+      # run ruff, mypy, pytest and python from it.
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - run: |
+          uv sync --locked --extra dev --python "$(command -v python)"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      # The single gate (guide "Test subsets"); CI runs it unchanged. It includes the
+      # benchmarks (guide rule 8: the `benchmark` marker is not excluded) and the templates.
+      - run: bash scripts/check.sh
+
+  # The interface (AKS-119; docs/DECISIONS.md, 2026-11-08 · M9). Its gate is `npm run check`
+  # (type check, Biome, Vitest), then the end-to-end tests in Chromium against a real
+  # service started through the launcher with the built interface. scripts/check.sh stays
+  # the Python gate.
+  interface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # The locked environment (uv.lock; #99, retrospective P9): `--locked` fails when the lock
+      # no longer matches pyproject.toml. Its bin folder goes first on PATH, so the steps below
+      # run ruff, mypy, pytest and python from it.
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - run: |
+          uv sync --locked --extra dev --python "$(command -v python)"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        working-directory: .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+        env:
+          ITHAX_PYTHON: python
+
+  # The desktop shell (AKS-142; docs/DECISIONS.md, 2026-11-09 · M11): Tauri's Linux
+  # prerequisites, WebKitWebDriver and Xvfb from Ubuntu's archive; the shell built with the
+  # Tauri CLI from desktop/package-lock.json and Cargo.lock; its Rust unit tests; then the
+  # shell started and driven to Home through tauri-driver (pytest marker desktop, which
+  # scripts/check.sh leaves out).
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            webkit2gtk-driver xvfb
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # The locked environment (uv.lock; #99, retrospective P9): `--locked` fails when the lock
+      # no longer matches pyproject.toml. Its bin folder goes first on PATH, so the steps below
+      # run ruff, mypy, pytest and python from it.
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - run: |
+          uv sync --locked --extra dev --python "$(command -v python)"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            desktop/package-lock.json
+      - name: Build the interface
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+      - run: cargo install tauri-driver --version 2.1.0 --locked
+      - name: Check the shell's format and lints
+        working-directory: desktop/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Build the shell and run its unit tests
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run build
+          npm test
+      - run: pytest -m desktop
+
+  # The Linux package (AKS-127; docs/DECISIONS.md, 2026-11-09 · M11): built from the
+  # checkout by scripts/package_linux.py (the interface and the shell from their lock files,
+  # the pinned Python and wheels), then installed from the archive in a clean ubuntu:24.04
+  # container, online and with --network none, to a first template result, and its shell
+  # driven to Home under Xvfb (pytest marker package, which scripts/check.sh leaves out).
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            webkit2gtk-driver xvfb
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # The locked environment (uv.lock; #99, retrospective P9): `--locked` fails when the lock
+      # no longer matches pyproject.toml. Its bin folder goes first on PATH, so the steps below
+      # run ruff, mypy, pytest and python from it.
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - run: |
+          uv sync --locked --extra dev --python "$(command -v python)"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            desktop/package-lock.json
+      - run: cargo install tauri-driver --version 2.1.0 --locked
+      - run: python scripts/package_linux.py
+      - run: pytest -m package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ithax-linux-x86_64
+          path: |
+            dist/ithax-*-linux-x86_64.tar.gz
+            dist/ithax-*-linux-x86_64.tar.gz.sha256
+          retention-days: 14
+
+  # The one check that branch protection requires (P4). A skipped or cancelled job counts
+  # as a failure here, so a red or missing job can never be merged past.
+  all-green:
+    if: always()
+    needs: [checks, interface, desktop, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "needs: $RESULTS"
+          for result in $RESULTS; do
+            [[ "$result" == "success" ]] || { echo "::error::a required job did not succeed"; exit 1; }
+          done

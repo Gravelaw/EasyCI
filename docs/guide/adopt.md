@@ -52,15 +52,25 @@ decisions to make along the way.
 - The person who will use it day to day has started a run and read a result without a terminal
   (Desktop launcher or dashboard).
 
-## Notes for the next adopter (ithax)
+## Ithax, the second adopter
 
-Nothing about ithax has been inspected yet. When it is onboarded, find out:
+Ithax (Gravelaw/Ithax) runs from [`examples/ithax/easyci.yml`](../../examples/ithax/easyci.yml). What
+onboarding it took, as a pattern for the next project:
 
-- its stack and test command (`easyci setup` will detect the common ones);
-- whether it has its own CI runner script to delegate to, or plain workflow steps to run natively;
-- whether its tests need Linux, a database or other services, a GPU, or large data (`data:`,
-  `artifact_threshold_mb`);
-- how long its jobs take and how much memory they need. JuliaFlow's Julia tests needed a heap-size
-  hint and extra swap on a 4 GiB WSL VM, so check the VM size (`free -m` inside the distro) early;
-- whether it needs anything EasyCI lists as a limitation in [../status.md](../status.md), such as
-  fork PRs or secrets from GitHub.
+- **Plain workflow steps, run natively.** Ithax has no runner of its own; `easyci plan` showed what
+  EasyCI could not run yet. That was `astral-sh/setup-uv`, which EasyCI now checks like the other
+  setup actions, plus two hosted-only jobs that the config skips (`all-green`, which EasyCI's
+  own `easyci` context replaces, and `pr-title`, which needs the pull request's title).
+- **A distro of its own,** `ithax-ci-ubuntu24`, with Python 3.11 and 3.13, uv, Node 22, Rust and
+  Tauri's Linux packages on the default PATH, and Windows' folders left off it
+  (`appendWindowsPath=false`), so a Windows `python` or `npm` is never picked up by mistake.
+- **A matrix of Python versions on one distro.** One `python3` cannot be both 3.11 and 3.13, so the
+  config sets `toolchains: {python: ignore}` and a `setup:` hook links the matrix's version
+  (from `env: {EASYCI_PYTHON: "${{ matrix.python-version }}"}`) as `python` on `$GITHUB_PATH`,
+  which is what `setup-python` does on GitHub.
+- **Check against GitHub first.** The first run (`--profile quick --no-report`) matched GitHub's
+  result on the same commit before reporting was turned on.
+
+Things to find out for the next one stay the same: its stack and test command, its own runner if it
+has one, services, GPU or large data, how long its jobs take and how much memory they need (`free -m`
+inside the distro), and whether it needs anything in [../status.md](../status.md)'s limitations.
