@@ -211,14 +211,23 @@ class NativeRuns(EasyCITest):
         pid = int(self.until(lambda: (rd / 'jobs/slow/pid').exists() and (rd / 'jobs/slow/pid').read_text().strip()))
         code, doc, _ = self.call('cancel', data['run_id'])
         self.assertEqual((code, doc['data']['state']), (0, 'cancelled'))
-        self.assertFalse(store.pid_alive(pid), 'step process killed')
-        self.assertFalse(store.pid_alive(self.sleep_pid(rd)), 'whole process tree killed')
+        self.assert_exited(pid, 'step process killed')
+        self.assert_exited(self.sleep_pid(rd), 'whole process tree killed')
         self.until(lambda: store.read_json(sd / 'run.json')['state'] == 'running')
         code, doc, _ = self.call('cancel', second_run['run_id'])
         self.assertEqual((code, doc['data']['state']), (0, 'cancelled'))
         self.assertTrue(doc['data']['plain'].startswith('Stopped because you asked.'))
         code, _ = self.wait(second_run['run_id'])
         self.assertEqual(code, 6)
+
+    def assert_exited(self, pid, msg='process still running'):
+        # Windows' TerminateProcess returns before the process is gone, so a check made at once fails
+        # now and then under load; allow it up to 10 seconds to exit.
+        deadline = time.time() + 10
+        while store.pid_alive(pid):
+            if time.time() > deadline:
+                self.fail(f'{msg} (pid {pid})')
+            time.sleep(0.1)
 
     def sleep_pid(self, rd):
         return int(self.until(lambda: (rd / 'jobs/slow/sleep.pid').exists()
@@ -239,8 +248,8 @@ class NativeRuns(EasyCITest):
         self.assertEqual(data['jobs'][0]['reason'], 'timeout')
         self.assertTrue(data['plain'].startswith('slow ran longer than 0.07 minutes and was stopped.'))
         self.assertEqual({k: v[0] for k, v in self.final_statuses().items()}, {'easyci/slow': 'error', 'easyci': 'error'})
-        self.assertFalse(store.pid_alive(int((rd / 'jobs/slow/pid').read_text().strip())))
-        self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
+        self.assert_exited(int((rd / 'jobs/slow/pid').read_text().strip()))
+        self.assert_exited(self.sleep_pid(rd))
 
     def test_stall_kill_and_redaction(self):
         workflow = sleeper(30).replace('echo started', 'echo "secret is $MY_TOKEN"')
@@ -255,8 +264,8 @@ class NativeRuns(EasyCITest):
         for path in rd.rglob('*'):
             if path.is_file():
                 self.assertNotIn(b'tok-Zx81-unique-value', path.read_bytes(), path)
-        self.assertFalse(store.pid_alive(int((rd / 'jobs/slow/pid').read_text().strip())))
-        self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
+        self.assert_exited(int((rd / 'jobs/slow/pid').read_text().strip()))
+        self.assert_exited(self.sleep_pid(rd))
 
     def test_on_kill_runs_after_cancel_and_stall_kill_but_not_after_a_pass(self):
         # A delegated runner (JuliaFlow) sets up resources outside EasyCI's process tree; on_kill must
@@ -279,7 +288,7 @@ class NativeRuns(EasyCITest):
         log = log_path.read_text()
         self.assertLess(log.index('cancelled on request'), log.index('running on_kill cleanup'))
         self.assertIn('releasing', log)
-        self.assertFalse(store.pid_alive(self.sleep_pid(rd)))
+        self.assert_exited(self.sleep_pid(rd))
         self.assertEqual(self.call('verify', run['run_id'])[0], 0)
         # Stall kill: the hook runs with that reason, and a failing hook does not change the outcome.
         repo = self.make_repo(sleeper(60), {'easyci.yml': 'jobs:\n  slow:\n    stall_minutes: 0.03\n'
@@ -647,9 +656,8 @@ jobs:
         code, doc, _ = self.call('status', run['run_id'])
         self.assertEqual(doc['data']['state'], 'interrupted')
         self.assertFalse(store.lock_dir().exists())
-        # TerminateProcess returns before the process is gone; allow it a moment under load.
-        self.until(lambda: not store.pid_alive(child), timeout=10)  # leftover step tree killed by the reaper
-        self.until(lambda: not store.pid_alive(self.sleep_pid(rd)), timeout=10)
+        self.assert_exited(child, 'leftover step tree killed by the reaper')
+        self.assert_exited(self.sleep_pid(rd))
         self.assertEqual(self.final_statuses()['easyci/slow'][0], 'error')
         self.assertEqual(self.final_statuses()['easyci'][0], 'error')
         code, doc, _ = self.call('wait', run['run_id'])
