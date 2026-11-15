@@ -67,6 +67,28 @@ class JuliaFlowImport(unittest.TestCase):
         self.assertEqual((gate['predicted'], gate['steps'][0]['name']), ('run', 'easyci.yml setup'), gate.get('predicted_reason'))
         self.assertTrue(gate['cleanup'])
 
+    def test_ithax_example_runs_every_code_job_in_its_distro(self):
+        # examples/ithax/easyci.yml against Ithax's workflows (fixtures copied from Gravelaw/Ithax 96d144f).
+        cfg = workflow.load_config((ROOT / 'examples/ithax/easyci.yml').read_text(encoding='utf-8'))
+        wf = [('.github/workflows/checks.yml', (FIXTURES / 'ithax-checks.yml').read_bytes()),
+              ('.github/workflows/pr-title.yml', (FIXTURES / 'ithax-pr-title.yml').read_bytes())]
+        for profile, expected in (('pr', ['checks-3.11', 'checks-3.13', 'desktop', 'interface', 'package']),
+                                  ('quick', ['checks-3.11', 'checks-3.13', 'interface'])):
+            with self.subTest(profile=profile):
+                plan = workflow.build_plan(wf, cfg, {**INP, 'profile': profile})
+                j = jobs(plan)
+                self.assertEqual(sorted(name for name, job in j.items() if job['reported']), expected)
+                for name in expected:
+                    job = j[name]
+                    self.assertEqual((job['predicted'], job['backend']), ('run', 'wsl:ithax-ci-ubuntu24'), name)
+                    self.assertEqual(job['steps'][0]['name'], 'easyci.yml setup')
+                    # python comes from setup (the matrix version); uv is still checked
+                    self.assertEqual([t['tool'] for t in job['toolchains']],
+                                     ['uv'] if name.startswith('checks') else ['uv', 'node'])
+        # Without a profile every workflow job is planned; the two hosted-only ones are skipped.
+        j = jobs(workflow.build_plan(wf, cfg, dict(INP)))
+        self.assertEqual((j['all-green']['predicted'], j['pr-title']['predicted']), ('skipped', 'skipped'))
+
     def test_legacy_delegated_config_still_plans(self):
         cfg = workflow.load_config((ROOT / 'legacy/juliaflow/easyci.delegated.yml').read_text(encoding='utf-8'))
         plan = workflow.build_plan(juliaflow(), cfg, {**INP, 'profile': 'pr'})

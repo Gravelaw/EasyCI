@@ -126,6 +126,23 @@ tested JuliaFlow's main at 5239b21 with the `pr` profile and the registered conf
 context and the three `easyci/<job>` contexts as success on that commit, and `easyci verify` reports
 the evidence intact.
 
+## Second project: Ithax
+
+Ithax (Gravelaw/Ithax: Python, a TypeScript interface and a Tauri desktop shell) runs from
+[`examples/ithax/easyci.yml`](../examples/ithax/easyci.yml) in its own distro, `ithax-ci-ubuntu24`.
+The first run, 20261115-230733-a3ce (profile `quick`, Ithax's main at 96d144f, `--no-report`),
+gave GitHub's verdict on the same commit:
+
+| Job | EasyCI on this PC | GitHub |
+|---|---|---|
+| `checks` (3.11) | passed: 4584 tests, coverage 99.75%; 7.6 min | passed, about 10 min |
+| `checks` (3.13) | passed: 4584 tests, coverage 99.75%; 7 min | passed, about 8 min |
+| `interface` | passed: 47 Playwright tests; 7.5 min | passed, about 6 min |
+
+The jobs run one after another on this PC, so the run took 22 minutes. `desktop` and `package` are
+in the `pr` and `push` profiles and have not been run here yet. Reporting stays off in the config
+until they have been compared too.
+
 ## JuliaFlow cache
 
 JuliaFlow's default is now native (`examples/juliaflow/easyci.yml`). Its Julia depot, npm cache and

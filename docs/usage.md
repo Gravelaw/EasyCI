@@ -247,6 +247,10 @@ each job to JuliaFlow's own runner is kept in
 [`legacy/juliaflow/easyci.delegated.yml`](../legacy/juliaflow/easyci.delegated.yml); it only works
 on JuliaFlow commits that still have that runner.
 
+Worked example for Ithax: [`examples/ithax/easyci.yml`](../examples/ithax/easyci.yml) runs a Python
+version matrix, a Playwright interface and a Tauri desktop shell in a distro of its own, with a
+`setup:` hook that puts the matrix's Python on `$GITHUB_PATH` (see the adoption guide).
+
 ## Where things are kept
 
 Everything lives under `%USERPROFILE%\EasyCI` (set `EASYCI_HOME` to move it), never inside your
