@@ -79,6 +79,32 @@ class Mapping(unittest.TestCase):
                 job = plan_job(uv_job(), files)
                 self.assertEqual((job['predicted'], job['predicted_reason']), ('unsupported', reason))
 
+    def test_pin_lookup_follows_the_checkout_path(self):
+        pin = '[tool.uv]\nrequired-version = "0.12"\n'
+        files = {'pyproject.toml': pin, 'app/uv.toml': 'required-version = "0.9.2"\n'}
+
+        def job(checkout, workdir):
+            first = ('      - uses: actions/checkout@v4\n' + (f'        with: {{path: "{checkout}"}}\n' if checkout else '')
+                     if checkout is not None else '')
+            with_ = f'        with: {{working-directory: "{workdir}"}}\n' if workdir else ''
+            return ('on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n' + first +
+                    '      - uses: astral-sh/setup-uv@v10.3.3\n' + with_ + '      - run: uv --version\n')
+
+        for checkout, workdir, requested in (('source', 'source', '0.12'), ('source', 'source/app', '0.9.2'),
+                                             ('./source/', './source', '0.12'), ('', '', '0.12'),
+                                             (None, '', None)):  # nothing checked out: no files to read
+            with self.subTest(checkout=checkout, workdir=workdir):
+                planned = plan_job(job(checkout, workdir), files)
+                uv = next(s for s in planned['steps'] if s['kind'] == 'toolchain')
+                self.assertEqual((planned['predicted'], uv['requested']), ('run', requested))
+        for checkout, workdir, reason in (
+                ('source', 'other', 'toolchain_spec_unsupported:uv working-directory other is outside the checkout'),
+                ('source', '', 'toolchain_spec_unsupported:uv working-directory (the workspace root) is outside the checkout'),
+                ('${{ github.event_name }}', '', 'toolchain_spec_unsupported:uv checkout path expression')):
+            with self.subTest(reason=reason):
+                planned = plan_job(job(checkout, workdir), files)
+                self.assertEqual((planned['predicted'], planned['predicted_reason']), ('unsupported', reason))
+
     def test_inputs_that_change_the_environment_are_unsupported(self):
         cases = {'          python-version: "3.12"\n': 'toolchain_spec_unsupported:uv python-version',
                  '          cache-local-path: /tmp/uv\n': 'toolchain_spec_unsupported:uv cache-local-path',

@@ -308,6 +308,22 @@ def uv_required_version(with_, ctx):
     if '${{' in folder:
         raise Unsupported('toolchain_spec_unsupported:uv working-directory expression')
     folder = folder.replace('\\', '/').strip('/').removeprefix('./')
+    folder = '' if folder == '.' else folder
+    # The folder is in the workspace; the files are read from the repository. A checkout with
+    # `path: src` puts the repository's root at src/, so src/app is app/ in the repository.
+    checkouts = ctx.get('checkouts') or []
+    if not checkouts:  # no checkout before this step: the workspace has none of the project's files
+        return None
+    if any('${{' in p for p in checkouts):
+        raise Unsupported('toolchain_spec_unsupported:uv checkout path expression')
+    roots = [p.replace('\\', '/').strip('/').removeprefix('./') for p in checkouts]
+    roots = ['' if r == '.' else r for r in roots]
+    under = [r for r in roots if not r or folder == r or folder.startswith(r + '/')]
+    if not under:
+        raise Unsupported(f'toolchain_spec_unsupported:uv working-directory {folder or "(the workspace root)"} '
+                          'is outside the checkout')
+    root = max(under, key=len)
+    folder = folder[len(root):].strip('/')
     for name, keys in (('uv.toml', ('required-version',)), ('pyproject.toml', ('tool', 'uv', 'required-version'))):
         path = f'{folder}/{name}' if folder and folder != '.' else name
         data = read(path)
@@ -652,6 +668,8 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
             mapped = {'index': index, 'name': step_name(step), 'kind': 'unsupported', 'if': step.get('if'),
                       'uses': step.get('uses'), 'decision': str(error)}
         out['steps'].append(mapped)
+        if mapped['kind'] == 'checkout':  # where later steps find the repository's files
+            ctx.setdefault('checkouts', []).append(str(mapped.get('path') or ''))
         if mapped['kind'] == 'toolchain' and out['toolchain_policy'].get(mapped['tool']) != 'ignore':
             out['toolchains'].append({'tool': mapped['tool'], 'requested': mapped['requested'], 'step': index,
                                       'if': mapped.get('if')})
