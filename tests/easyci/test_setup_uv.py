@@ -144,7 +144,38 @@ class Mapping(unittest.TestCase):
         self.assertEqual(job['predicted_reason'], 'toolchain_spec_unsupported:node version file')
 
 
+class Outputs(unittest.TestCase):
+    def test_reading_an_output_easyci_does_not_produce_is_unsupported(self):
+        base = ('on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n{outputs}    steps:\n'
+                '      - uses: actions/checkout@v4\n      - uses: astral-sh/setup-uv@v10.3.3\n        id: uv\n'
+                '      - run: echo "{ref}"\n')
+        cases = {'${{ steps.uv.outputs.uv-path }}': 'unsupported_output:astral-sh/setup-uv@v10.3.3 uv-path',
+                 "${{ steps['uv'].outputs['uvx-path'] }}": 'unsupported_output:astral-sh/setup-uv@v10.3.3 uvx-path',
+                 '${{ steps.uv.outputs.uv-version }}': None,       # produced from the probe
+                 '${{ steps.other.outputs.uv-path }}': None,       # another step's output
+                 '${{ steps.uv.outputs.uv-path-extra }}': None}    # a different name
+        for ref, reason in cases.items():
+            with self.subTest(ref=ref):
+                job = plan_job(base.format(outputs='', ref=ref))
+                self.assertEqual((job['predicted'], job.get('predicted_reason')), ('unsupported' if reason else 'run', reason))
+        job = plan_job(base.format(outputs='    outputs: {path: "${{ steps.uv.outputs.uv-path }}"}\n', ref='x'))
+        self.assertEqual(job['predicted_reason'], 'unsupported_output:astral-sh/setup-uv@v10.3.3 uv-path')
+
+
 class Runs(EasyCITest):
+    def test_uv_version_output_comes_from_the_probe(self):
+        text = ('on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
+                '      - uses: actions/checkout@v4\n      - uses: astral-sh/setup-uv@v10.3.3\n        id: uv\n'
+                '      - run: echo "uv-is-${{ steps.uv.outputs.uv-version }}"\n')
+        repo = self.make_repo(text, remote='https://github.com/owner/repo.git')
+        os.environ['EASYCI_FAKE_PROBES'] = json.dumps({'uv': 'uv 0.12.1 (x86_64-unknown-linux-gnu)', 'git': 'git version 2.50'})
+        got, doc, err = self.call('run', '--repo', repo, '--backend', 'fake', '--no-report', '--event', 'pull_request')
+        self.assertEqual(got, 0, (doc, err))
+        got, data = self.wait(doc['data']['run_id'])
+        self.assertEqual((got, data['state']), (0, 'passed'), data)
+        log = (self.run_dir(data['run_id']) / 'jobs/j/log.txt').read_text()
+        self.assertIn('uv-is-0.12.1', log.replace('Run echo "uv-is-', ''))
+
     def test_a_pin_in_pyproject_is_read_from_the_tested_commit(self):
         files = {'pyproject.toml': '[project]\nname = "x"\n[tool.uv]\nrequired-version = "0.12"\n'}
         repo = self.make_repo(uv_job(run='echo uv-ok'), files, remote='https://github.com/owner/repo.git')

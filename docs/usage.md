@@ -132,7 +132,9 @@ Branch on `data.state` (`queued`, `preparing`, `running`, `passed`, `failed`, `u
   `pyproject.toml` (in its `working-directory`, at the tested commit); a range there is reported
   unsupported. The cache and download inputs (`enable-cache`, `cache-dependency-glob`,
   `github-token`, ...) are ignored; inputs that change the job's environment (`python-version`,
-  `activate-environment`, `tool-dir`, `cache-local-path`, ...) are reported unsupported.
+  `activate-environment`, `tool-dir`, `cache-local-path`, ...) are reported unsupported. Its
+  `uv-version` output is the installed version; a job that reads `uv-path` or `uvx-path` is reported
+  unsupported.
 - `actions/cache`, `actions/cache/restore`, `actions/cache/save` (v3/v4) with a **local** cache:
   the exact key first, then the newest entry for each `restore-keys` prefix; `actions/cache` saves
   after the job passes. Outputs `cache-hit`, `cache-primary-key`, `cache-matched-key`. Native jobs

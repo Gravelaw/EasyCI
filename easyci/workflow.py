@@ -684,10 +684,43 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
         if mapped['kind'] == 'toolchain' and out['toolchain_policy'].get(mapped['tool']) != 'ignore':
             out['toolchains'].append({'tool': mapped['tool'], 'requested': mapped['requested'], 'step': index,
                                       'if': mapped.get('if')})
+    reasons.extend(unprovided_outputs(job, out['steps']))
     if not out['steps']:
         reasons.append('unsupported_job:no steps')
     add_setup_step(out, jcfg)
     return out
+
+
+# Outputs of a setup action that EasyCI does not produce. A job that reads one is unsupported:
+# the value would silently be empty. (setup-uv's uv-version is produced from the probe.)
+UNPROVIDED_OUTPUTS = {'uv': ('uv-path', 'uvx-path')}
+
+
+def unprovided_outputs(job, steps):
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+
+    texts = list(strings(job))
+    found = []
+    for step in steps:
+        if step.get('kind') != 'toolchain' or not step.get('id') or step.get('tool') not in UNPROVIDED_OUTPUTS:
+            continue
+        sid = re.escape(str(step['id']))
+        for name in UNPROVIDED_OUTPUTS[step['tool']]:
+            key = re.escape(name)
+            # steps.uv.outputs.uv-path, and the index forms steps['uv'].outputs['uv-path']
+            pattern = (rf"steps\s*(?:\.\s*{sid}\b|\[\s*['\"]{sid}['\"]\s*\])\s*\.\s*outputs\s*"
+                       rf"(?:\.\s*{key}(?![\w-])|\[\s*['\"]{key}['\"]\s*\])")
+            if any(re.search(pattern, text) for text in texts):
+                found.append(f'unsupported_output:{step["uses"] if step.get("uses") else step["tool"]} {name}')
+    return found
 
 
 def add_setup_step(out, jcfg):
