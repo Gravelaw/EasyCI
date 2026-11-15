@@ -91,6 +91,15 @@ class Register(EasyCITest):
         code, doc, _ = self.call('plan', '--repo', self.repo)
         self.assertEqual((code, doc['error']['code']), (2, 'CONFIG_NOT_FOUND'))
         self.assertIn('easyci register --clear', doc['error']['fix'])
+        # register itself reads the saved config to check a profile: the same answer, not a crash.
+        os.environ['EASYCI_DESKTOP'] = str(self.tmp)  # never the real Desktop, even if this regressed
+        for args in (('--profile', 'pr-b'), ('--desktop',)):
+            with self.subTest(args=args):
+                doc = self.register(*args, code=2)
+                self.assertEqual(doc['error']['code'], 'CONFIG_NOT_FOUND')
+                self.assertIn('easyci register --clear', doc['error']['fix'])
+        self.register('--config', self.cfg.with_name('moved.yml'))  # a new path fixes it
+        self.assertEqual(self.planned()[0], 'only-a')
         data = self.register('--clear')['data']
         self.assertEqual((data['config'], data['profile']), (None, None))
         self.assertEqual(self.planned()[:3], (None, 'push', ['a', 'b']))

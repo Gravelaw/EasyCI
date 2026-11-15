@@ -709,12 +709,18 @@ def cmd_register(args):
         fields['profile'] = saved['profile'] = args.profile or None
     if saved.get('profile'):
         if saved.get('config'):
-            data, source = pathlib.Path(saved['config']).read_bytes(), saved['config']
+            source = saved['config']
+            try:
+                data = pathlib.Path(source).read_bytes()
+            except OSError as error:  # the saved config has moved since it was registered
+                raise Fail(2, 'CONFIG_NOT_FOUND', f'Cannot read the saved config {source}: {error}',
+                           'Save its new path with: easyci register --config <path>, '
+                           'or forget it with: easyci register --clear') from None
         else:
             data, source = snapshot.show(repo, 'HEAD', 'easyci.yml'), 'easyci.yml at HEAD'
         try:
             cfg = workflow.load_config(data.decode('utf-8'), source) if data is not None else {}
-        except (workflow.ConfigError, OSError) as error:
+        except workflow.ConfigError as error:
             raise Fail(2, 'CONFIG_INVALID', str(error), 'Fix easyci.yml; see docs/usage.md for the keys.') from None
         if saved['profile'] not in (cfg.get('profiles') or {}):
             names = ', '.join(sorted(cfg.get('profiles') or {})) or 'none'
