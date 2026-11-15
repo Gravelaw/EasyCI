@@ -71,7 +71,7 @@ JuliaFlow PRs #65, #64 and #63 ran back to back without anyone watching, and eac
 - **Process-based services only on `wsl`.** PostgreSQL is the only built-in service; anything else
   needs the Podman backend. Podman volumes, registry credentials and extra container options are
   reported unsupported.
-- **Hosted-only actions.** Actions other than checkout, the setup actions for Node, Python, Julia, Java and Go, cache, and upload/download-artifact are
+- **Hosted-only actions.** Actions other than checkout, the setup actions for Node, Python, Julia, Java, Go and uv, cache, and upload/download-artifact are
   not run. A job that needs one must replace it with `command:`, `skip_steps` or a `run:` step.
 - **Memory on small WSL VMs.** The WSL VM is shared by every distro. Heavy jobs may need what the
   project's own runner gives them (JuliaFlow: a heap-size hint and temporary swap, through

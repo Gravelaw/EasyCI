@@ -33,7 +33,13 @@ STEP_KEYS = {'name', 'id', 'if', 'run', 'uses', 'with', 'env', 'shell', 'working
              'timeout-minutes'}
 SETUP = {'actions/setup-node': ('node', 'node-version'), 'actions/setup-python': ('python', 'python-version'),
          'julia-actions/setup-julia': ('julia', 'version'), 'actions/setup-java': ('java', 'java-version'),
-         'actions/setup-go': ('go', 'go-version')}
+         'actions/setup-go': ('go', 'go-version'), 'astral-sh/setup-uv': ('uv', 'version')}
+# setup-uv inputs that only concern its download or the hosted cache, so they change nothing
+# when uv is already installed. Anything else (python-version, activate-environment, tool-dir,
+# ...) changes the job's environment and is reported unsupported rather than ignored.
+UV_IGNORED = {'version', 'enable-cache', 'cache-dependency-glob', 'cache-suffix', 'prune-cache',
+              'ignore-nothing-to-cache', 'ignore-empty-workdir', 'github-token', 'working-directory', 'checksum',
+              'save-cache', 'restore-cache', 'cache-python', 'manifest-file', 'server-url'}
 CACHE = ('actions/cache', 'actions/cache/restore', 'actions/cache/save')  # local caches since Phase 1
 SHELLS = {'bash', 'sh', 'pwsh', 'powershell', 'cmd'}
 BACKEND = re.compile(r'(native|fake|wsl(:[A-Za-z0-9._-]+)?|podman:[A-Za-z0-9._-]+)\Z')
@@ -290,6 +296,66 @@ def step_name(step):
     return 'Run ' + str(step.get('uses', 'step'))
 
 
+def workspace_folder(value, what):
+    """A workspace-relative folder in normal form ('' for the root): `app/.` is app, `app/..` the
+    root. An expression, an absolute path or one that climbs out of the workspace is unsupported."""
+    import posixpath
+    text = str(value or '').strip().replace('\\', '/')
+    if '${{' in text:
+        raise Unsupported(f'toolchain_spec_unsupported:uv {what} expression')
+    if text.startswith('/') or re.match(r'[A-Za-z]:', text):
+        raise Unsupported(f'toolchain_spec_unsupported:uv {what} {text} is absolute')
+    norm = posixpath.normpath(text) if text else '.'
+    if norm == '..' or norm.startswith('../'):
+        raise Unsupported(f'toolchain_spec_unsupported:uv {what} {text} is outside the workspace')
+    return '' if norm == '.' else norm
+
+
+def uv_required_version(with_, ctx):
+    """The uv version setup-uv picks when its `version` input is left out: `required-version` from
+    uv.toml, else `[tool.uv] required-version` from pyproject.toml, in its working-directory at the
+    tested commit. None when neither pins one (setup-uv then installs the latest)."""
+    import tomllib
+    read = ctx.get('read_file')
+    if read is None:  # planning without the repository (direct callers): nothing to read
+        return None
+    folder = workspace_folder(with_.get('working-directory'), 'working-directory')
+    # The folder is in the workspace; the files are read from the repository. A checkout with
+    # `path: src` puts the repository's root at src/, so src/app is app/ in the repository.
+    checkouts = ctx.get('checkouts') or []
+    if not checkouts:  # no checkout before this step: the workspace has none of the project's files
+        return None
+    if any(c['if'] not in (None, '', True, 'true') for c in checkouts):
+        # Whether that checkout runs is only known at run time, and with it whether the files exist.
+        raise Unsupported('toolchain_spec_unsupported:uv pin after a conditional checkout')
+    roots = [workspace_folder(c['path'], 'checkout path') for c in checkouts]
+    under = [r for r in roots if not r or folder == r or folder.startswith(r + '/')]
+    if not under:
+        raise Unsupported(f'toolchain_spec_unsupported:uv working-directory {folder or "(the workspace root)"} '
+                          'is outside the checkout')
+    root = max(under, key=len)
+    folder = folder[len(root):].strip('/')
+    for name, keys in (('uv.toml', ('required-version',)), ('pyproject.toml', ('tool', 'uv', 'required-version'))):
+        path = f'{folder}/{name}' if folder and folder != '.' else name
+        data = read(path)
+        if data is None:
+            continue
+        try:
+            value = tomllib.loads(data.decode('utf-8'))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+            raise Unsupported(f'toolchain_spec_unsupported:uv cannot read {path}') from None
+        for key in keys:
+            value = value.get(key) if isinstance(value, dict) else None
+        if value is None:
+            continue
+        spec = str(value).strip()
+        exact = re.fullmatch(r'(?:==\s*)?v?(\d+(?:\.\d+)*)', spec)
+        if not exact:  # a range (>=0.5, ~=0.5): EasyCI checks one version, never a range
+            raise Unsupported(f'toolchain_spec_unsupported:uv required-version {spec} in {path}')
+        return exact.group(1)
+    return None
+
+
 def plan_step(index, step, ctx):
     """Map one workflow step; raise Unsupported with a precise reason."""
     unknown = set(step) - STEP_KEYS
@@ -328,12 +394,20 @@ def plan_step(index, step, ctx):
         out.update(kind='checkout', path=with_.get('path') or '', decision='clean clone of the run commit from the bundle')
     elif name in SETUP:
         tool, key = SETUP[name]
-        if any(k.endswith('-file') for k in with_):
+        if any(str(k).endswith('-file') and not (tool == 'uv' and k == 'manifest-file') for k in with_):
             raise Unsupported(f'toolchain_spec_unsupported:{tool} version file')
+        if tool == 'uv':
+            extra = sorted(str(k) for k in with_ if k not in UV_IGNORED)
+            if extra:
+                raise Unsupported(f'toolchain_spec_unsupported:uv {", ".join(extra)}')
         requested = with_.get(key)
         if isinstance(requested, str) and '${{' in requested:  # e.g. node-version: ${{ matrix.node }}
             requested = expr.to_str(expr.interpolate(requested, {'github': ctx['github'], 'matrix': ctx.get('matrix') or {},
                                                                  'strategy': ctx.get('strategy') or {}}))
+        if tool == 'uv' and str(requested).strip().lower() == 'latest':  # after interpolation: ${{ matrix.uv }}
+            requested = None  # setup-uv's default; any installed uv will do
+        elif tool == 'uv' and requested is None:
+            requested = uv_required_version(with_, ctx)
         if requested is not None:
             version_spec(requested, tool)
         out.update(kind='toolchain', tool=tool, requested=None if requested is None else str(requested),
@@ -590,7 +664,7 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
     skip_steps = jcfg.get('skip_steps', [])
     # The resolved runner (a matrix `runs-on: ${{ matrix.os }}` is already filled in) picks the default shell.
     ctx = {'defaults': defaults, 'backend': backend, 'runs_on': str(out['runs_on']), 'github': gh,
-           'matrix': matrix or {}, 'strategy': strategy or {}}
+           'matrix': matrix or {}, 'strategy': strategy or {}, 'read_file': inp.get('read_file')}
     for index, step in enumerate(job.get('steps') or [], 1):
         if not isinstance(step, dict):
             raise ConfigError(f'{wf_path}: job {jid} step {index} must be a mapping')
@@ -605,13 +679,48 @@ def plan_job(wf_path, wf, jid, job, jcfg, cfg, inp, gh, matrix=None, strategy=No
             mapped = {'index': index, 'name': step_name(step), 'kind': 'unsupported', 'if': step.get('if'),
                       'uses': step.get('uses'), 'decision': str(error)}
         out['steps'].append(mapped)
+        if mapped['kind'] == 'checkout':  # where later steps find the repository's files
+            ctx.setdefault('checkouts', []).append({'path': str(mapped.get('path') or ''), 'if': step.get('if')})
         if mapped['kind'] == 'toolchain' and out['toolchain_policy'].get(mapped['tool']) != 'ignore':
             out['toolchains'].append({'tool': mapped['tool'], 'requested': mapped['requested'], 'step': index,
                                       'if': mapped.get('if')})
+    reasons.extend(unprovided_outputs(job, out['steps']))
     if not out['steps']:
         reasons.append('unsupported_job:no steps')
     add_setup_step(out, jcfg)
     return out
+
+
+# Outputs of a setup action that EasyCI does not produce. A job that reads one is unsupported:
+# the value would silently be empty. (setup-uv's uv-version is produced from the probe.)
+UNPROVIDED_OUTPUTS = {'uv': ('uv-path', 'uvx-path')}
+
+
+def unprovided_outputs(job, steps):
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+
+    texts = list(strings(job))
+    found = []
+    for step in steps:
+        if step.get('kind') != 'toolchain' or not step.get('id') or step.get('tool') not in UNPROVIDED_OUTPUTS:
+            continue
+        sid = re.escape(str(step['id']))
+        for name in UNPROVIDED_OUTPUTS[step['tool']]:
+            key = re.escape(name)
+            # steps.uv.outputs.uv-path, and the index forms steps['uv'].outputs['uv-path']
+            pattern = (rf"steps\s*(?:\.\s*{sid}\b|\[\s*['\"]{sid}['\"]\s*\])\s*\.\s*outputs\s*"
+                       rf"(?:\.\s*{key}(?![\w-])|\[\s*['\"]{key}['\"]\s*\])")
+            if any(re.search(pattern, text) for text in texts):
+                found.append(f'unsupported_output:{step["uses"] if step.get("uses") else step["tool"]} {name}')
+    return found
 
 
 def add_setup_step(out, jcfg):

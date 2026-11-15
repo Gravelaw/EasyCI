@@ -612,6 +612,9 @@ class Supervisor:
                 return False, {'exit_code': 1}
             actual = probe.get(step['tool'])
             self.marker(f'{step["tool"]} {actual} verified (requested {step["requested"] or "any"})')
+            if step['tool'] == 'uv':  # setup-uv's own output; uv-path and uvx-path are refused when planning
+                found = re.search(r'\d+(?:\.\d+)*', actual or '')
+                return True, {'outputs': {'uv-version': found.group(0) if found else ''}}
             return True, {}
         if kind == 'cache':
             return self.cache_step(step, ctx, backend, ws, env)

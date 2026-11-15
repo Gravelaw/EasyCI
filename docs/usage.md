@@ -124,9 +124,17 @@ Branch on `data.state` (`queued`, `preparing`, `running`, `passed`, `failed`, `u
   `timeout-minutes`, `id` with `$GITHUB_OUTPUT`, `$GITHUB_ENV`, `$GITHUB_STEP_SUMMARY`, job
   `outputs`, `needs`.
 - `actions/checkout@v3..v5` (clean clone of the tested commit), `actions/setup-node`,
-  `setup-python`, `setup-julia`, `setup-java`, `setup-go` (the installed version is **checked**, not
-  installed; a setup step with an `if:` is checked only when it runs), `actions/upload-artifact` and
-  `actions/download-artifact` (v3/v4, between jobs of the same run).
+  `setup-python`, `setup-julia`, `setup-java`, `setup-go` and `astral-sh/setup-uv` (the installed
+  version is **checked**, not installed; a setup step with an `if:` is checked only when it runs),
+  `actions/upload-artifact` and `actions/download-artifact` (v3/v4, between jobs of the same run).
+  For `setup-uv`, `version: latest` accepts any installed uv. Without a `version` input, the pin
+  setup-uv itself would use is checked: `required-version` in `uv.toml`, else `[tool.uv]` in
+  `pyproject.toml` (in its `working-directory`, at the tested commit); a range there is reported
+  unsupported. The cache and download inputs (`enable-cache`, `cache-dependency-glob`,
+  `github-token`, ...) are ignored; inputs that change the job's environment (`python-version`,
+  `activate-environment`, `tool-dir`, `cache-local-path`, ...) are reported unsupported. Its
+  `uv-version` output is the installed version; a job that reads `uv-path` or `uvx-path` is reported
+  unsupported.
 - `actions/cache`, `actions/cache/restore`, `actions/cache/save` (v3/v4) with a **local** cache:
   the exact key first, then the newest entry for each `restore-keys` prefix; `actions/cache` saves
   after the job passes. Outputs `cache-hit`, `cache-primary-key`, `cache-matched-key`. Native jobs

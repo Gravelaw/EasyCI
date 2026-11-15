@@ -235,7 +235,8 @@ def plan_inputs(args, require_report=False):
            'base_ref': getattr(args, 'base_ref', None),
            'repository': repository or '', 'profile': args.profile, 'jobs': args.job, 'workflow': args.workflow,
            'backend': args.backend, 'default_backend': gcfg.get('backend'),
-           'changed': changed_paths(repo, event, base, commit)}
+           'changed': changed_paths(repo, event, base, commit),
+           'read_file': lambda path: snapshot.show(repo, commit, path)}  # files at the tested commit
     try:
         plan = workflow.build_plan(files, cfg, inp)
     except workflow.ConfigError as error:
@@ -631,8 +632,14 @@ def cmd_setup(args):
             say(args, line)
     write = args.write or args.commit
     if result['files'] and not write and not args.json and sys.stdin.isatty():
-        answer = input('Write these files now? [Y/n] ').strip().lower()
+        try:
+            answer = input('Write these files now? [Y/n] ').strip().lower()
+        except EOFError:  # a terminal with no one typing (an agent, a script): write nothing
+            say(args, '')
+            answer = 'n'
         write = answer in ('', 'y', 'yes')
+        if not write:
+            say(args, 'Nothing written. Run `easyci setup --write` (or --commit) to write them.')
     written = onboard.write(repo, result['files']) if write else []
     for item in result['files']:
         item['written'] = item['path'] in written
